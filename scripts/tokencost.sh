@@ -37,7 +37,7 @@ done
 
 # --- Collect skill data ---
 export TMPFILE=$(mktemp)
-trap "rm -f $TMPFILE" EXIT
+trap 'rm -f "$TMPFILE"' EXIT
 
 scan_skills() {
     local dir="$1"
@@ -94,7 +94,7 @@ for_each_skill_dir _token_scan
 # --- Subagents: their descriptions are always-loaded too (~/.claude/agents,
 # ~/.config/opencode/agents) ---
 export AGENTS_TMPFILE=$(mktemp)
-trap "rm -f $TMPFILE $AGENTS_TMPFILE" EXIT
+trap 'rm -f "$TMPFILE" "$AGENTS_TMPFILE"' EXIT
 # Realpath dedup: from $HOME, ./.claude/agents IS ~/.claude/agents — without
 # this the always-loaded agents total doubles.
 _seen_agents_dirs=""
@@ -193,8 +193,25 @@ if usage_file and os.path.isfile(usage_file):
     except (json.JSONDecodeError, IOError):
         pass
 
+def usage_for_skill(s):
+    """Join usage by stable identity. Current files key by id ("name" when
+    unique across harnesses, else "<scope>:<name>"); legacy files key by
+    bare name. Two copies of the same skill name in different harnesses
+    must NOT share a counter — the scope-qualified key disambiguates them."""
+    name = s["name"]
+    if name in usage_data:
+        return usage_data[name]
+    scopes = set((s.get("scope") or "").split(","))
+    for k, v in usage_data.items():
+        if ":" not in k:
+            continue
+        head, tail = k.split(":", 1)
+        if tail == name and head in scopes:
+            return v
+    return {}
+
 for s in skills:
-    u = usage_data.get(s["name"], {})
+    u = usage_for_skill(s)
     s["used"] = u.get("total", 0) > 0
     s["usage_count"] = u.get("total", 0)
     s["last_used"] = u.get("last_used", "never")

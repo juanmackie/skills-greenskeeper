@@ -57,7 +57,7 @@ mkdir -p "$DATA_DIR"
 
 # --- Collect skills and their descriptions ---
 export SKILLS_TMPFILE=$(mktemp)
-trap "rm -f $SKILLS_TMPFILE" EXIT
+trap 'rm -f "$SKILLS_TMPFILE"' EXIT
 
 collect_skills() {
     local dir="$1"
@@ -115,7 +115,7 @@ export OPENCODE_CALLS_TMP=$(mktemp)
 export PI_CALLS_TMP=$(mktemp)
 export OPENCODE_SHARE="${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}"
 export PI_SESSIONS_ROOT="${PI_CODING_AGENT_SESSION_DIR:-$PI_AGENT_DIR/sessions}"
-trap "rm -f $SKILLS_TMPFILE $SKILL_CALLS_TMP $OPENCODE_CALLS_TMP $PI_CALLS_TMP" EXIT
+trap 'rm -f "$SKILLS_TMPFILE" "$SKILL_CALLS_TMP" "$OPENCODE_CALLS_TMP" "$PI_CALLS_TMP"' EXIT
 # Soft warnings (inventories still run, counts stay 0): only warn when the
 # harness actually has skills registered, so Claude-only installs stay quiet.
 if [[ "$HAS_OPENCODE" == "true" && ! -f "$OPENCODE_SHARE/opencode.db" && ! -d "$OPENCODE_SHARE/project" ]]; then
@@ -361,6 +361,78 @@ if SKILLS_FILE and os.path.isfile(SKILLS_FILE):
 for s in skills:
     s["scope"] = ",".join(sorted(s.pop("scopes")))
 
+# --- Stable identity -----------------------------------------------------------
+# Usage keys must not collide across harnesses: a skill named "foo" installed
+# in both ~/.claude/skills and ~/.config/opencode/skills used to share one
+# usage counter, so invoking one inflated the other and swipe could rank the
+# wrong copy as waste. Bare folder names stay the identity when unique; a name
+# present in more than one harness gets "<first-scope>:<name>" (matching the
+# invocation form users actually type, e.g. "/skill:pi-lens" for a pi-package
+# skill). Plugin/package qualified names ("ns:name") were already unique and
+# keep their form for backward compatibility with existing history matching.
+_identity_counts = defaultdict(int)
+for s in skills:
+    _identity_counts[s["name"]] += 1
+for s in skills:
+    if _identity_counts[s["name"]] > 1 and ":" not in s["name"]:
+        _first_scope = s["scope"].split(",")[0]
+        s["id"] = f"{_first_scope}:{s['name']}"
+    else:
+        s["id"] = s["name"]
+
+def _id_index():
+    idx = {}
+    for _s in skills:
+        idx.setdefault(_s["name"], _s)
+        idx.setdefault(_s["id"], _s)
+    return idx
+
+_ID_IDX = _id_index()
+
+def _harness_match(s, harness):
+    scopes = (s.get("scope") or "").split(",")
+    if harness == "opencode":
+        return any(sc.startswith("opencode") for sc in scopes)
+    if harness == "pi":
+        return any(sc.startswith("pi") for sc in scopes)
+    if harness == "claude":
+        return any(not sc.startswith(("opencode", "pi")) for sc in scopes)
+    return False
+
+def resolve_skill(inv, harness=None):
+    """Map an invocation/transcript name to a skill record.
+    Collects every matching skill (exact name, stable id, or bare segment
+    after the last colon — Pi package names are themselves colon-qualified
+    and Claude accepts bare plugin-skill invocations), then prefers a
+    candidate registered under the calling harness. An OpenCode session load
+    must credit the OpenCode copy, not an identical folder name in Claude's
+    directory."""
+    if not inv:
+        return None
+    candidates = []
+    for _s in skills:
+        if inv == _s["name"] or inv == _s["id"]:
+            if _s not in candidates:
+                candidates.append(_s)
+    if ":" not in inv:
+        for _s in skills:
+            if _s in candidates:
+                continue
+            if inv == _s["name"].rsplit(":", 1)[-1] or inv == _s["id"].rsplit(":", 1)[-1]:
+                candidates.append(_s)
+    else:
+        tail = inv.rsplit(":", 1)[-1]
+        for _s in skills:
+            if _s not in candidates and tail == _s["name"].rsplit(":", 1)[-1]:
+                candidates.append(_s)
+    if not candidates:
+        return None
+    if harness:
+        for _s in candidates:
+            if _harness_match(_s, harness):
+                return _s
+    return candidates[0]
+
 # --- Extract keywords (reuse logic from detect_dupes.sh) ---
 STOP_WORDS = {
     "use", "when", "the", "user", "wants", "to", "or", "and", "a", "an",
@@ -383,7 +455,7 @@ def extract_keywords(desc):
 # Build skill keyword map
 skill_keywords = {}
 for s in skills:
-    skill_keywords[s["name"]] = extract_keywords(s["desc"])
+    skill_keywords[s["id"]] = extract_keywords(s["desc"])
 
 # --- Parse history ---
 now = datetime.now(timezone.utc)
@@ -434,24 +506,12 @@ for line in history_lines:
             # Match against known skills. Plugin skills are registered under
             # their qualified name (<plugin>:<skill>) but Claude Code accepts
             # the bare form too (`/janitor-audit` for
-            # `skills-greenskeeper:janitor-audit`) — match both, exact-name first
-            # across all skills so a user-scope skill wins over a bare plugin
-            # alias with the same name. rsplit: Pi package names are
-            # themselves colon-qualified ("npm:pkg:skill"), so only the last
-            # segment is the invocable name.
+            # `skills-greenskeeper:janitor-audit`) — the shared resolver
+            # handles exact, qualified and bare-segment forms.
             cmd_name = cmd.lstrip("/").lstrip("$.")
-            matched = None
-            for s in skills:
-                if cmd_name == s["name"]:
-                    matched = s
-                    break
-            if matched is None and ":" not in cmd_name:
-                for s in skills:
-                    if ":" in s["name"] and cmd_name == s["name"].rsplit(":", 1)[-1]:
-                        matched = s
-                        break
+            matched = resolve_skill(cmd_name)
             if matched is not None:
-                name = matched["name"]
+                name = matched["id"]
                 explicit_counts[name][week_key] += 1
                 last_used[name] = max(
                     last_used.get(name, entry_time), entry_time
@@ -466,7 +526,7 @@ for line in history_lines:
                 continue
 
             for s in skills:
-                kw = skill_keywords.get(s["name"], set())
+                kw = skill_keywords.get(s["id"], set())
                 if not kw:
                     continue
 
@@ -476,9 +536,9 @@ for line in history_lines:
 
                 # Higher threshold (50%) to avoid false positives
                 if similarity > 0.5 and len(common) >= 3:
-                    estimated_counts[s["name"]][week_key] += 1
-                    if s["name"] not in last_used or entry_time > last_used[s["name"]]:
-                        last_used[s["name"]] = entry_time
+                    estimated_counts[s["id"]][week_key] += 1
+                    if s["id"] not in last_used or entry_time > last_used[s["id"]]:
+                        last_used[s["id"]] = entry_time
                     weekly_totals[week_key] += 1
 
 # --- Transcript Skill invocations (real tool_use records) ---
@@ -500,18 +560,9 @@ if SKILL_CALLS and os.path.isfile(SKILL_CALLS):
                 if t is None or t < cutoff:
                     continue
                 wk = t.strftime("%Y-W%W")
-                matched = None
-                for s in skills:
-                    if inv == s["name"]:
-                        matched = s
-                        break
-                if matched is None and ":" not in inv:
-                    for s in skills:
-                        if ":" in s["name"] and inv == s["name"].rsplit(":", 1)[-1]:
-                            matched = s
-                            break
+                matched = resolve_skill(inv)
                 if matched is not None:
-                    name = matched["name"]
+                    name = matched["id"]
                     explicit_counts[name][wk] += 1
                     if name not in last_used or t > last_used[name]:
                         last_used[name] = t
@@ -521,7 +572,8 @@ if SKILL_CALLS and os.path.isfile(SKILL_CALLS):
 # Highest-fidelity sources like the Claude transcript records above: every
 # entry is a real skill load, so they count into explicit_counts under the
 # matching registry name (qualified or bare folder name).
-for _harness_env in ("OPENCODE_CALLS_TMP", "PI_CALLS_TMP"):
+for _harness_env, _harness_name in (("OPENCODE_CALLS_TMP", "opencode"),
+                                     ("PI_CALLS_TMP", "pi")):
     _hf = os.environ.get(_harness_env, "")
     if not _hf or not os.path.isfile(_hf):
         continue
@@ -540,18 +592,9 @@ for _harness_env in ("OPENCODE_CALLS_TMP", "PI_CALLS_TMP"):
             if _t < cutoff:
                 continue
             _wk = _t.strftime("%Y-W%W")
-            _matched = None
-            for _s in skills:
-                if _inv == _s["name"]:
-                    _matched = _s
-                    break
-            if _matched is None and ":" not in _inv:
-                for _s in skills:
-                    if ":" in _s["name"] and _inv == _s["name"].rsplit(":", 1)[-1]:
-                        _matched = _s
-                        break
+            _matched = resolve_skill(_inv, harness=_harness_name)
             if _matched is not None:
-                _name = _matched["name"]
+                _name = _matched["id"]
                 explicit_counts[_name][_wk] += 1
                 last_used[_name] = max(
                     last_used.get(_name, _t), _t
@@ -559,27 +602,29 @@ for _harness_env in ("OPENCODE_CALLS_TMP", "PI_CALLS_TMP"):
                 weekly_totals[_wk] += 1
 
 # --- Build results ---
-all_skill_names = [s["name"] for s in skills]
+# Saved and joined by stable identity; the display name stays the readably
+# qualified folder name for reports and the swipe deck.
 results = []
 for s in skills:
-    name = s["name"]
-    exp_total = sum(explicit_counts[name].values())
-    est_total = sum(estimated_counts[name].values())
+    sid = s["id"]
+    exp_total = sum(explicit_counts[sid].values())
+    est_total = sum(estimated_counts[sid].values())
     total = exp_total + est_total
-    lu = last_used.get(name)
+    lu = last_used.get(sid)
     lu_str = lu.strftime("%Y-%m-%d") if lu else "never"
     weeks_since = int((now - lu).days / 7) if lu else -1
 
     results.append({
-        "name": name,
+        "id": sid,
+        "name": s["name"],
         "scope": s["scope"],
         "explicit": exp_total,
         "estimated": est_total,
         "total": total,
         "last_used": lu_str,
         "weeks_since_use": weeks_since,
-        "explicit_weekly": dict(explicit_counts[name]),
-        "estimated_weekly": dict(estimated_counts[name]),
+        "explicit_weekly": dict(explicit_counts[sid]),
+        "estimated_weekly": dict(estimated_counts[sid]),
     })
 
 # Sort: most used first, then alphabetical
@@ -615,7 +660,11 @@ if DATA_DIR:
         "active_skills": len(active_skills),
         "unused_skills": len(unused_skills),
         "weekly_totals": merged_weekly,
-        "skills": {r["name"]: {
+        # Keyed by stable id ("name" when unique across harnesses, else
+        # "<scope>:<name>"); legacy name-keyed entries stay readable via the
+        # name fallback in consumers.
+        "skills": {r["id"]: {
+            "name": r["name"],
             "explicit": r["explicit"],
             "estimated": r["estimated"],
             "total": r["total"],

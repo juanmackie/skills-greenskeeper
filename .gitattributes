@@ -1,0 +1,7 @@
+# Keep shell scripts LF everywhere — the test suite pins line endings, and
+# bash on Windows must see the same bytes CI sees.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.png binary
+*.gif binary
+*.mp4 binary

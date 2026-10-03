@@ -46,7 +46,7 @@ fi
 
 # Temp files for passing data to Python (avoids shell interpolation issues)
 TMPDIR_DASH=$(mktemp -d -t greenskeeper-dash.XXXXXX)
-trap "rm -rf $TMPDIR_DASH" EXIT
+trap 'rm -rf "$TMPDIR_DASH"' EXIT
 
 echo "Collecting greenskeeper data..."
 
@@ -147,8 +147,17 @@ existing.append(snapshot)
 if len(existing) > max_snapshots:
     existing = existing[-max_snapshots:]
 
-# Rebuild HTML using string concatenation (no regex, no backreference issues)
-new_json = json.dumps(existing, indent=2, ensure_ascii=False)
+# Rebuild HTML using string concatenation (no regex, no backreference issues).
+# Every `<` is escaped as `\u003c` inside the JSON payload: HTML script-data
+# parsing terminates the block at a literal `</script>` and can get stuck in
+# "escaped" state at `<!--` — both appear in real skill content (HTML
+# examples in descriptions), and either would silently destroy every stored
+# snapshot on the next run. `\u003c` is a valid JSON escape, so the data
+# round-trips unchanged.
+new_json = json.dumps(existing, indent=2, ensure_ascii=False).replace("<", "\\u003c")
+if "</script>" in new_json or "<!--" in new_json:
+    print("ERROR: snapshot payload would break the HTML data block", file=sys.stderr)
+    sys.exit(1)
 new_html = html[:start_idx] + marker_start + new_json + html[end_idx:]
 
 with open(dashboard_path, "w") as f:

@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # python3 is preinstalled on all three runners; verify before the suite
+      # so a missing interpreter fails loudly instead of silencing fixtures.
+      - name: Check python3
+        shell: bash
+        run: python3 --version
+
+      - name: Syntax check
+        shell: bash
+        run: |
+          bash -n greenskeeper
+          for f in scripts/*.sh tests/*.sh; do bash -n "$f"; done
+
+      - name: Regression suite (seam 1)
+        shell: bash
+        run: bash tests/test_cli_regression.sh
+
+      - name: Multi-harness suite (seam 2)
+        shell: bash
+        run: bash tests/test_multiplatform.sh

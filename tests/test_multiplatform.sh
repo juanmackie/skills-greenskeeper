@@ -445,6 +445,160 @@ for want in "COUNT 2" "SKILLS OK" "TITLE OK"; do
     fi
 done
 
+# --- Dashboard: hostile skill content cannot break the data block -----------
+# A description containing "</script>" or "<!--" used to terminate the JSON
+# block early, silently erasing all snapshots on the next run (H1); and
+# unescaped values reached innerHTML (H3). Inject hostile content, rebuild,
+# and assert: round-trip parse, prior snapshots survive, escaping is present.
+echo "dashboard: hostile content is escaped and cannot destroy snapshots"
+mkdir -p "$FIXTURE_HOME/.claude/skills/hostile"
+printf -- '---\nname: hostile\ndescription: "Explains markup. Ends scripts like </script> and starts comments <!-- here. Use when testing."\n---\n# Hostile\n\nBody.\n\n## Steps\n\n1. X.\n\n## Gotchas\n\n- Y.\n' \
+    > "$FIXTURE_HOME/.claude/skills/hostile/SKILL.md"
+bash "$REPO_DIR/scripts/dashboard.sh" --no-open > "$TMP/dash3.out" 2>&1 || fail "dashboard with hostile content exited nonzero"
+HOSTILE_CHECK=$(python3 - "$TMP/dashdata/greenskeeper-dashboard.html" <<'PYEOF'
+import json, re, sys
+html = open(sys.argv[1]).read()
+m = re.search(r'<script type="application/json" id="snapshotData">(.*?)</script>',
+              html, re.S)
+if not m:
+    print("NOMARKER")
+    sys.exit(0)
+try:
+    snaps = json.loads(m.group(1))
+    print("ROUNDTRIP OK")
+except Exception as e:
+    print("ROUNDTRIP BROKEN: %s" % e)
+    snaps = []
+print("SURVIVED %s" % ("OK" if len(snaps) == 3 else "WRONG %d" % len(snaps)))
+descs = []
+for s in snaps:
+    for sk in (s.get("scan") or {}).get("skills", []):
+        descs.append(sk.get("description") or "")
+joined = "".join(descs)
+print("PRESERVED %s" % ("OK" if "</script>" in joined else "WRONG"))
+print("ESCAPED %s" % ("OK" if "\\u003c/script>" in html else "WRONG"))
+print("ESC_FN %s" % ("OK" if "function esc(" in html else "WRONG"))
+PYEOF
+)
+for want in "ROUNDTRIP OK" "SURVIVED OK" "PRESERVED OK" "ESCAPED OK" "ESC_FN OK"; do
+    if printf '%s\n' "$HOSTILE_CHECK" | grep -qx "$want"; then
+        pass "hostile $want"
+    else
+        fail "hostile check '$want'"
+        printf '%s\n' "$HOSTILE_CHECK" | sed 's/^/    | /'
+    fi
+done
+
+# --- Usage identity: colliding names in two harnesses stay separate ----------
+# A skill named "dup" in Claude and OpenCode must not share one counter
+# (H2): the usage file keys the collision by "<scope>:<name>" and a load
+# from one harness must credit that harness's copy only.
+echo "usage: same name in two harnesses keeps separate counters"
+mkdir -p "$FIXTURE_HOME/.claude/skills/dup" "$FIXTURE_HOME/.config/opencode/skills/dup"
+printf -- '---\nname: dup\ndescription: Claude copy of the colliding skill. Use when testing collisions.\n---\n# D\n\nBody.\n\n## Steps\n\n1. X.\n\n## Gotchas\n\n- Y.\n' \
+    > "$FIXTURE_HOME/.claude/skills/dup/SKILL.md"
+printf -- '---\nname: dup\ndescription: OpenCode copy of the colliding skill. Use when testing collisions.\n---\n# D\n\nBody.\n\n## Steps\n\n1. X.\n\n## Gotchas\n\n- Y.\n' \
+    > "$FIXTURE_HOME/.config/opencode/skills/dup/SKILL.md"
+bash "$REPO_DIR/scripts/usage.sh" --weeks 52 --json > "$TMP/usage2.json" 2>/dev/null || fail "usage.sh baseline rerun failed"
+# Simulate an OpenCode session loading "dup" (SQLite part), then rerun.
+python3 - "$FIXTURE_HOME/.local/share/opencode/opencode.db" <<'PYEOF'
+import json, sqlite3, sys
+from datetime import datetime, timezone
+db = sys.argv[1]
+ms = int(datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc).timestamp() * 1000)
+con = sqlite3.connect(db)
+part = {"type": "tool", "tool": "skill", "state": {"status": "x", "input": {"name": "dup"}}}
+con.execute("INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+            ("p_dup", "m_dup", "s1", ms, ms, json.dumps(part)))
+con.commit()
+con.close()
+PYEOF
+bash "$REPO_DIR/scripts/usage.sh" --weeks 52 --json > "$TMP/usage2.json" 2>/dev/null
+IDENT_CHECK=$(python3 - "$TMP/usage2.json" "$REPO_DIR/data/usage-history.json" <<'PYEOF'
+import json, sys
+out = json.load(open(sys.argv[1]))
+rows = {r["id"]: r for r in out["skills"]}
+claude = rows.get("user:dup")
+opencode = rows.get("opencode-user:dup")
+if claude is None or opencode is None:
+    print("ROWS WRONG %r" % sorted(rows))
+else:
+    print("ROWS OK")
+    print("SPLIT %s" % ("OK" if claude["total"] == 0 and opencode["total"] == 1
+                        else "WRONG claude=%s opencode=%s" % (claude["total"], opencode["total"])))
+try:
+    saved = json.load(open(sys.argv[2]))
+    keys = saved.get("skills", {}).keys()
+    print("SAVEKEY %s" % ("OK" if "opencode-user:dup" in keys and "user:dup" in keys
+                          else "WRONG %r" % list(keys)))
+except Exception as e:
+    print("SAVEKEY BROKEN %s" % e)
+PYEOF
+)
+for want in "ROWS OK" "SPLIT OK" "SAVEKEY OK"; do
+    if printf '%s\n' "$IDENT_CHECK" | grep -qx "$want"; then
+        pass "identity $want"
+    else
+        fail "identity check '$want'"
+        printf '%s\n' "$IDENT_CHECK" | sed 's/^/    | /'
+    fi
+done
+
+# --- Fix: descriptions with apostrophes/backslashes are never overwritten ----
+# fix --apply once treated an xargs-incompatible description as empty and
+# replaced it with the placeholder template (M2). A valid description with
+# one apostrophe must survive byte-identically apart from intended fixes.
+echo "fix: apostrophe/backslash descriptions survive --apply"
+APOS_HOME="$TMP/aposfix"
+mkdir -p "$APOS_HOME/.claude/skills/aposfix"
+cat > "$APOS_HOME/.claude/skills/aposfix/SKILL.md" <<'EOF'
+---
+name: aposfix
+description: Handles the user's C:\Users paths without mangling them. Use when paths contain apostrophes or backslashes.
+---
+# Aposfix
+
+Processes tricky paths.
+
+## Steps
+
+1. Read it.
+
+## Gotchas
+
+- Literal backslashes.
+EOF
+cp "$APOS_HOME/.claude/skills/aposfix/SKILL.md" "$TMP/aposfix-orig.md"
+HOME="$APOS_HOME" bash "$REPO_DIR/scripts/fix.sh" --apply > "$TMP/aposfix.out" 2>&1 || fail "fix --apply on aposfix exited nonzero"
+if grep -q 'Filled empty description' "$TMP/aposfix.out"; then
+    fail "fix --apply overwrote an apostrophe description"
+else
+    pass "apostrophe description not overwritten"
+fi
+# Byte-identity after removing only the intended metadata addition.
+sed -e '/^metadata:$/d' -e '/^  version: "1.0.0"$/d' \
+    "$APOS_HOME/.claude/skills/aposfix/SKILL.md" > "$TMP/aposfix-minus"
+if cmp -s "$TMP/aposfix-minus" "$TMP/aposfix-orig.md"; then
+    pass "apostrophe file byte-identical apart from intended fix"
+else
+    fail "apostrophe file was modified beyond the intended fix"
+    diff "$TMP/aposfix-minus" "$TMP/aposfix-orig.md" | sed 's/^/    | /'
+fi
+
+# --- Writable-scope guard: package-managed paths are never edited ------------
+echo "fix: package/git-managed paths are skipped"
+PKG_HOME="$TMP/pkgfix"
+mkdir -p "$PKG_HOME/.pi/agent/npm/node_modules/somepkg/skills/managed"
+printf -- '---\nname: managed\ndescription: A package skill. Use when testing guards.\n---\n# M\n' \
+    > "$PKG_HOME/.pi/agent/npm/node_modules/somepkg/skills/managed/SKILL.md"
+cp "$PKG_HOME/.pi/agent/npm/node_modules/somepkg/skills/managed/SKILL.md" "$TMP/managed-orig.md"
+HOME="$PKG_HOME" bash "$REPO_DIR/scripts/fix.sh" --apply > "$TMP/pkgfix.out" 2>&1 || true
+if cmp -s "$TMP/managed-orig.md" "$PKG_HOME/.pi/agent/npm/node_modules/somepkg/skills/managed/SKILL.md"; then
+    pass "package-managed file untouched"
+else
+    fail "package-managed file was modified"
+fi
+
 # --- Summary ----------------------------------------------------------------
 echo
 echo "seam 2: $PASS passed, $FAIL failed"

@@ -19,7 +19,7 @@ source "$(dirname "$0")/paths.sh"
 
 # Collect all skill descriptions into a temp file
 export TMPFILE=$(mktemp)
-trap "rm -f $TMPFILE" EXIT
+trap 'rm -f "$TMPFILE"' EXIT
 
 extract_skills() {
     local dir="$1"

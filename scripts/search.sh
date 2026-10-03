@@ -62,7 +62,7 @@ mkdir -p "$DATA_DIR"
 
 # --- Collect installed skill names across all harnesses ---
 export INSTALLED_TMPFILE=$(mktemp)
-trap "rm -f $INSTALLED_TMPFILE" EXIT
+trap 'rm -f "$INSTALLED_TMPFILE"' EXIT
 _installed_iter() {
     local parent_dir="$1"
     [[ -d "$parent_dir" ]] || return 0

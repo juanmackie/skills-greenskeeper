@@ -396,27 +396,3 @@ extract_description() {
         started && block {exit}
     ' "$file" 2>/dev/null | sed 's/[[:space:]]*$//'
 }
-
-# --- Platform display ---
-platform_label() {
-    local label=""
-    if [[ "$HAS_CLAUDE" == "true" ]]; then
-        label="Claude Code"
-    fi
-    if [[ "$HAS_CODEX" == "true" ]]; then
-        [[ -n "$label" ]] && label="$label + "
-        label="${label}Codex"
-    fi
-    if [[ "$HAS_OPENCODE" == "true" ]]; then
-        [[ -n "$label" ]] && label="$label + "
-        label="${label}OpenCode"
-    fi
-    if [[ "$HAS_PI" == "true" ]]; then
-        [[ -n "$label" ]] && label="$label + "
-        label="${label}Pi"
-    fi
-    if [[ -z "$label" ]]; then
-        label="none"
-    fi
-    echo "$label"
-}

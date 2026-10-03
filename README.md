@@ -2,7 +2,7 @@
 
 > Tinder for your agent skills. Swipe through your collection and delete what's wasting context, in seconds.
 
-Works with **Claude Code**, **OpenAI Codex**, **OpenCode** and **Pi**. 6 commands plus a standalone `greenskeeper` launcher, zero dependencies.
+Works with **Claude Code**, **OpenAI Codex**, **OpenCode** and **Pi**. 9 commands plus a standalone `greenskeeper` launcher, zero dependencies.
 
 > **Status (v1.9, October 2026): now multi-harness.**
 >

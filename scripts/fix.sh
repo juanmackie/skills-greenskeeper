@@ -199,10 +199,15 @@ $new_content"
             modified=true
             log_change "$name" "Added template description field"
         else
-            # Check if description is empty
+            # Check if description is empty — via the shared block-scalar-aware
+            # parser, NOT `xargs`. xargs parses shell quoting and aborts on an
+            # apostrophe ("the user's") or backslash, which this branch would
+            # then mistake for an empty description and overwrite with the
+            # placeholder template (the exact class fixed in lint.sh for
+            # v1.7.1; mirrored here now).
             local desc_value
-            desc_value=$(echo "$frontmatter" | grep '^description:' | head -1 | sed 's/^description:[[:space:]]*//' | tr -d '"' | tr -d "'" | xargs 2>/dev/null || echo "")
-            if [[ -z "$desc_value" ]]; then
+            desc_value=$(extract_description "$skill_file")
+            if [[ -z "${desc_value//[[:space:]]/}" ]]; then
                 # Replace only the first frontmatter description line
                 new_content=$(echo "$new_content" | awk -v tmpl="$desc_template" '
                     NR>1 && /^---\r?$/ { fm_done=1 }

@@ -10,22 +10,22 @@ set -euo pipefail
 command -v python3 &>/dev/null || { echo "ERROR: python3 required" >&2; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Per-process default path — a fixed /tmp name made concurrent runs clobber
-# each other's decks.
-OUTPUT="${1:-/tmp/janitor-swipe-deck.$$.json}"
+# Per-process default path in $TMPDIR when set (a fixed /tmp name made
+# concurrent runs clobber each other's decks).
+OUTPUT="${1:-${TMPDIR:-/tmp}/janitor-swipe-deck.$$.json}"
 
 # Refresh usage data (writes data/usage-history.json that tokencost reads)
 bash "$SCRIPT_DIR/usage.sh" --json >/dev/null 2>&1 || true
 
 # Get tokencost JSON (this already joins scan + usage for us)
 TMP_TOKEN=$(mktemp)
-trap "rm -f $TMP_TOKEN" EXIT
+trap 'rm -f "$TMP_TOKEN"' EXIT
 bash "$SCRIPT_DIR/tokencost.sh" --json > "$TMP_TOKEN" 2>/dev/null
 
 # Get raw scan output for the scope + path detail (tokencost flattens these)
 TMP_SCAN=$(mktemp)
 TMP_MCP=$(mktemp)
-trap "rm -f $TMP_TOKEN $TMP_SCAN $TMP_MCP" EXIT
+trap 'rm -f "$TMP_TOKEN" "$TMP_SCAN" "$TMP_MCP"' EXIT
 bash "$SCRIPT_DIR/scan.sh" > "$TMP_SCAN" 2>/dev/null
 
 # MCP servers join the deck too (v1.7) — their tool schemas are always
