@@ -19,8 +19,21 @@
 #
 # Tests observe external behavior only: lint stdout, scan JSON, and file bytes
 # after `fix --apply`. No framework; must stay green on macOS bash 3.2.
+#
+# Two fixtures assert Unix-only semantics and are skipped where the OS cannot
+# provide them — noted per check rather than weakened:
+#   crlf   - MSYS (Git Bash) text-mode mounts strip CR on read, so a CRLF
+#            file cannot round-trip byte-identically there
+#   symlink - Windows without Developer Mode cannot create real symlinks
+#            (`ln -s` copies), so the "don't write through" check is moot
 
 set -u
+
+SKIP_CRLF=false
+SKIP_SYMLINK=false
+case "$(uname -s 2>/dev/null || echo unknown)" in
+    MINGW*|MSYS*|CYGWIN*) SKIP_CRLF=true; SKIP_SYMLINK=true ;;
+esac
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d -t greenskeeper-seam1.XXXXXX)
@@ -167,13 +180,18 @@ else
     pass "fix.sh applied no delimiter or description fix"
 fi
 # Byte-level check: removing exactly the intended metadata lines must restore
-# the original file, byte for byte (CRs included).
-sed -e '/^metadata:$/d' -e '/^  version: "1.0.0"$/d' "$CRLF_FIXED" > "$TMP/crlf-minus-metadata"
-if cmp -s "$TMP/crlf-minus-metadata" "$CRLF_ORIG"; then
-    pass "file is byte-identical apart from the metadata addition"
+# the original file, byte for byte (CRs included). Skipped on MSYS, where the
+# filesystem layer strips CR on read regardless of file contents.
+if [[ "$SKIP_CRLF" == "true" ]]; then
+    echo "  skip: CRLF byte-identity (MSYS filesystem strips CR)"
 else
-    fail "file differs beyond the metadata addition"
-    diff <(cat -v "$CRLF_ORIG") <(cat -v "$CRLF_FIXED") | sed 's/^/    | /'
+    sed -e '/^metadata:$/d' -e '/^  version: "1.0.0"$/d' "$CRLF_FIXED" > "$TMP/crlf-minus-metadata"
+    if cmp -s "$TMP/crlf-minus-metadata" "$CRLF_ORIG"; then
+        pass "file is byte-identical apart from the metadata addition"
+    else
+        fail "file differs beyond the metadata addition"
+        diff <(cat -v "$CRLF_ORIG") <(cat -v "$CRLF_FIXED") | sed 's/^/    | /'
+    fi
 fi
 if grep -q '^metadata:$' "$CRLF_FIXED" && grep -q '^  version: "1.0.0"$' "$CRLF_FIXED"; then
     pass "intended metadata.version addition is present"
@@ -244,18 +262,24 @@ description: Inline description the symlink target must keep untouched.
 EOF
 cp "$LINK_HOME/outside/victim/SKILL.md" "$TMP/victim-orig.md"
 ln -s "$LINK_HOME/outside/victim" "$LINK_HOME/.claude/skills/victim"
-LINK_OUT=$(HOME="$LINK_HOME" bash "$REPO_DIR/scripts/fix.sh" --apply 2>&1)
-if cmp -s "$TMP/victim-orig.md" "$LINK_HOME/outside/victim/SKILL.md"; then
-    pass "symlink target was not written through"
+# Windows without Developer Mode cannot create real symlinks (ln -s copies),
+# so the skip behaviour cannot trigger there. Skip both assertions.
+if [[ "$SKIP_SYMLINK" == "true" ]] || [ ! -L "$LINK_HOME/.claude/skills/victim" ]; then
+    echo "  skip: symlink semantics unavailable on this filesystem"
 else
-    fail "fix.sh wrote through the symlink into the target"
-    diff <(cat -v "$TMP/victim-orig.md") <(cat -v "$LINK_HOME/outside/victim/SKILL.md") | sed 's/^/    | /'
-fi
-if printf '%s\n' "$LINK_OUT" | grep -q 'symlink ->'; then
-    pass "skipped symlink is reported with its target"
-else
-    fail "no skip line naming the symlinked skill"
-    printf '%s\n' "$LINK_OUT" | sed 's/^/    | /'
+    LINK_OUT=$(HOME="$LINK_HOME" bash "$REPO_DIR/scripts/fix.sh" --apply 2>&1)
+    if cmp -s "$TMP/victim-orig.md" "$LINK_HOME/outside/victim/SKILL.md"; then
+        pass "symlink target was not written through"
+    else
+        fail "fix.sh wrote through the symlink into the target"
+        diff <(cat -v "$TMP/victim-orig.md") <(cat -v "$LINK_HOME/outside/victim/SKILL.md") | sed 's/^/    | /'
+    fi
+    if printf '%s\n' "$LINK_OUT" | grep -q 'symlink ->'; then
+        pass "skipped symlink is reported with its target"
+    else
+        fail "no skip line naming the symlinked skill"
+        printf '%s\n' "$LINK_OUT" | sed 's/^/    | /'
+    fi
 fi
 
 # --- Summary ----------------------------------------------------------------

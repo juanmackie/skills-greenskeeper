@@ -105,16 +105,14 @@ _add_project_dir "$PI_PROJECT_SKILLS" "pi"
 # at the active version's directory; skills live at <installPath>/skills/ or
 # <installPath>/.claude/skills/. Dedup by realpath so a plugin installed at
 # both user and project scope (same installPath) is added once.
+#
+# The resolver runs via a TEMPFILE + redirect, not `< <(python3 <<'PYEOF')`:
+# bash 3.2 (macOS default) mis-parses a heredoc inside process substitution
+# with "bad substitution: no closing ')'", killing every script at source
+# time. Temp-file staging is the portable pattern.
 if [[ -f "$INSTALLED_PLUGINS_FILE" ]] && command -v python3 &>/dev/null; then
-    while IFS='|' read -r _plugin_name _plugin_dir; do
-        # Trailing CR strip: defense in depth next to the python-side
-        # newline pin, for Windows pipe translation and CRLF path entries.
-        _plugin_name="${_plugin_name%$'\r'}"
-        _plugin_dir="${_plugin_dir%$'\r'}"
-        [[ -n "$_plugin_dir" ]] || continue
-        [[ -d "$_plugin_dir" ]] || continue
-        ALL_SKILL_DIRS+=("plugin|claude|$_plugin_name|$_plugin_dir")
-    done < <(python3 - "$INSTALLED_PLUGINS_FILE" <<'PYEOF'
+    _plugins_tmp=$(mktemp -t greenskeeper-plugins.XXXXXX)
+    python3 - "$INSTALLED_PLUGINS_FILE" > "$_plugins_tmp" <<'PYEOF'
 import json, os, sys
 # Pin LF on stdout: Windows python translates \n to \r\n in pipes, which
 # would leave stray \r on every line the bash `read` loop consumes.
@@ -149,7 +147,16 @@ for key, instances in plugins.items():
                 print(f"{plugin_name}|{candidate.replace(chr(92), '/')}")
                 break
 PYEOF
-)
+    while IFS='|' read -r _plugin_name _plugin_dir; do
+        # Trailing CR strip: defense in depth next to the python-side
+        # newline pin, for Windows pipe translation and CRLF path entries.
+        _plugin_name="${_plugin_name%$'\r'}"
+        _plugin_dir="${_plugin_dir%$'\r'}"
+        [[ -n "$_plugin_dir" ]] || continue
+        [[ -d "$_plugin_dir" ]] || continue
+        ALL_SKILL_DIRS+=("plugin|claude|$_plugin_name|$_plugin_dir")
+    done < "$_plugins_tmp"
+    rm -f "$_plugins_tmp"
 fi
 
 # --- Add source skill dirs ---
@@ -175,22 +182,12 @@ fi
 # allowed) or the conventional <package>/skills/ directory. These entries use
 # scope "package" (qualified downstream to "pi-package") and are read-only:
 # managed by `pi`, never edited or deleted by the greenskeeper.
+# bash 3.2 (macOS default) mis-parses a heredoc inside `<(...)` process
+# substitution ("bad substitution: no closing ')'") — the same reason the
+# plugin resolver above uses a tempfile. Keep this pattern.
 if command -v python3 &>/dev/null; then
-    while IFS='|' read -r _pi_kind _pi_scope _pi_ns _pi_dir; do
-        # Trailing CR strip: defense in depth next to the python-side
-        # newline pin, for Windows pipe translation and CRLF path entries.
-        _pi_kind="${_pi_kind%$'\r'}"
-        _pi_scope="${_pi_scope%$'\r'}"
-        _pi_ns="${_pi_ns%$'\r'}"
-        _pi_dir="${_pi_dir%$'\r'}"
-        [[ -n "$_pi_dir" ]] || continue
-        [[ -d "$_pi_dir" ]] || continue
-        if [[ "$_pi_kind" == "pkg" ]]; then
-            ALL_SKILL_DIRS+=("package|pi|$_pi_ns|$_pi_dir")
-        else
-            ALL_SKILL_DIRS+=("$_pi_scope|pi||$_pi_dir")
-        fi
-    done < <(PI_AGENT_DIR="$PI_AGENT_DIR" PI_GIT_ROOT="$PI_GIT_ROOT" PI_NPM_ROOT="$PI_NPM_ROOT" python3 <<'PYEOF'
+    _pi_tmp=$(mktemp -t greenskeeper-pi.XXXXXX)
+    PI_AGENT_DIR="$PI_AGENT_DIR" PI_GIT_ROOT="$PI_GIT_ROOT" PI_NPM_ROOT="$PI_NPM_ROOT" python3 > "$_pi_tmp" <<'PYEOF'
 import glob
 import json
 import os
@@ -331,7 +328,22 @@ for settings_path, settings_dir, level in candidates:
                 target = os.path.dirname(g) if has_skill_md(g) else g
                 emit("exp", "pi-" + level, target)
 PYEOF
-)
+    while IFS='|' read -r _pi_kind _pi_scope _pi_ns _pi_dir; do
+        # Trailing CR strip: defense in depth next to the python-side
+        # newline pin, for Windows pipe translation and CRLF path entries.
+        _pi_kind="${_pi_kind%$'\r'}"
+        _pi_scope="${_pi_scope%$'\r'}"
+        _pi_ns="${_pi_ns%$'\r'}"
+        _pi_dir="${_pi_dir%$'\r'}"
+        [[ -n "$_pi_dir" ]] || continue
+        [[ -d "$_pi_dir" ]] || continue
+        if [[ "$_pi_kind" == "pkg" ]]; then
+            ALL_SKILL_DIRS+=("package|pi|$_pi_ns|$_pi_dir")
+        else
+            ALL_SKILL_DIRS+=("$_pi_scope|pi||$_pi_dir")
+        fi
+    done < "$_pi_tmp"
+    rm -f "$_pi_tmp"
 fi
 
 # --- Detect which platforms are present ---
