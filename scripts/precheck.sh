@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Pre-Install Overlap Check
+# Skills Greenskeeper - Pre-Install Overlap Check
 # Checks if a new skill would duplicate existing ones before installing
 
 set -euo pipefail
@@ -57,7 +57,7 @@ extract_skills() {
         [[ -d "$skill_dir" ]] || continue
         local name
         name=$(basename "$skill_dir")
-        [[ "$name" == "skills-janitor" ]] && continue
+        [[ "$name" == "skills-greenskeeper" ]] && continue
 
         local skill_file=""
         [[ -f "$skill_dir/SKILL.md" ]] && skill_file="$skill_dir/SKILL.md"
@@ -72,8 +72,12 @@ extract_skills() {
     done
 }
 
-# Scan all platforms (Claude Code + Codex)
-_precheck_scan() { extract_skills "$1" "$2"; }
+# Scan all harnesses (Claude Code + Codex + OpenCode + Pi)
+_precheck_scan() {
+    local _scope="$2"
+    [[ "$3" != "claude" ]] && _scope="$3-$2"
+    extract_skills "$1" "$_scope"
+}
 for_each_skill_dir _precheck_scan
 
 # --- Fetch or read the new skill ---
@@ -122,10 +126,10 @@ if [[ "$SOURCE" == http* ]]; then
 
             # Search for SKILL.md in the repo
             API_URL="https://api.github.com/search/code?q=filename:SKILL.md+repo:$REPO_PATH"
-            SEARCH_RESULT=$(curl -sL -f -H "Accept: application/vnd.github.v3+json" -H "User-Agent: skills-janitor/1.5.0" ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} "$API_URL" 2>/dev/null || true)
+            SEARCH_RESULT=$(curl -sL -f -H "Accept: application/vnd.github.v3+json" -H "User-Agent: skills-greenskeeper/1.9.0" ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} "$API_URL" 2>/dev/null || true)
 
             if [[ -n "$SEARCH_RESULT" ]]; then
-                FIRST_PATH=$(echo "$SEARCH_RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['items'][0]['path'] if d.get('items') else '')" 2>/dev/null || true)
+                FIRST_PATH=$(echo "$SEARCH_RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['items'][0]['path'] if d.get('items') else '')" 2>/dev/null | tr -d '\r' || true)
                 if [[ -n "$FIRST_PATH" ]]; then
                     RAW_URL="https://raw.githubusercontent.com/$REPO_PATH/main/$FIRST_PATH"
                     NEW_SKILL_CONTENT=$(curl -sL -f "$RAW_URL" 2>/dev/null || true)
@@ -198,6 +202,8 @@ import os
 import re
 import json
 import sys
+# Pin LF on stdout (Windows pipe \r\n translation breaks bash consumers).
+sys.stdout.reconfigure(newline="\n")
 
 SOURCE = os.environ.get("SOURCE", "")
 JSON_OUTPUT = os.environ.get("JSON_OUTPUT", "false") == "true"
@@ -328,7 +334,7 @@ if JSON_OUTPUT:
     }
     print(json.dumps(output, indent=2))
 else:
-    print("=== Skills Janitor - Pre-Install Check ===")
+    print("=== Skills Greenskeeper - Pre-Install Check ===")
     print()
     print(f"  Checking: {new_name}")
     print(f"  Source: {SOURCE}")

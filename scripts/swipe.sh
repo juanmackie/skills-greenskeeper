@@ -1,12 +1,12 @@
 #!/bin/bash
-# Skills Janitor - Swipe TUI
+# Skills Greenskeeper - Swipe TUI
 # Tinder for your Claude Code skills. Score-sorted deck, swipe left to stage
 # delete, right to keep. Pure bash + ANSI, zero deps (uses python3 only to
 # parse the deck JSON, same as the rest of the project).
 #
 # Must run from an interactive terminal. Inside Claude Code, prefix with `!`
 # so the shell — not the Bash tool — handles stdin:
-#   !bash ~/.claude/skills/skills-janitor/scripts/swipe.sh
+#   !bash ~/.claude/skills/skills-greenskeeper/scripts/swipe.sh
 
 set -euo pipefail
 
@@ -15,8 +15,8 @@ command -v python3 &>/dev/null || { echo "ERROR: python3 required" >&2; exit 1; 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APPLY_MODE=""
 DECK_FILE=""
-LOG_FILE="$HOME/.skills-janitor/log.jsonl"
-DECISIONS_DIR="$HOME/.skills-janitor"
+LOG_FILE="$HOME/.skills-greenskeeper/log.jsonl"
+DECISIONS_DIR="$HOME/.skills-greenskeeper"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -56,16 +56,23 @@ fi
 if [[ "$SKIP_TUI" == "0" ]]; then
     if [ ! -t 0 ]; then
         cat >&2 <<'MSG'
-Swipe needs an interactive terminal. Inside Claude Code, prefix the command
-with `!` so the shell handles stdin:
-  !bash ~/.claude/skills/skills-janitor/scripts/swipe.sh
+Swipe needs an interactive terminal. Run it in a real console window, not
+from inside an agent's shell tool:
+  Git Bash / Terminal:  ./janitor swipe
+  CMD:                   janitor swipe
+  PowerShell:            .\janitor swipe
+  Claude Code:           !bash ~/.claude/skills/skills-greenskeeper/scripts/swipe.sh
 
 For the same data in list form, run /janitor-report or /janitor-value instead.
 MSG
         exit 1
     fi
-    COLS=$(tput cols)
-    LINES_T=$(tput lines)
+    # TERM is unset when launched from CMD/PowerShell via janitor.cmd —
+    # default it and fall back to 80x24 so the size probe can't abort the
+    # script under `set -e` before the real checks below run.
+    export TERM="${TERM:-xterm}"
+    COLS=$(tput cols 2>/dev/null || echo 80)
+    LINES_T=$(tput lines 2>/dev/null || echo 24)
     if [[ "$COLS" -lt 50 ]]; then
         echo "Swipe needs at least 50 columns. Yours: $COLS. Resize and retry." >&2
         exit 1
@@ -90,6 +97,9 @@ trap 'rm -f "$DECK_TSV"; restore_term 2>/dev/null || true' EXIT
 
 DECK_META=$(python3 - "$DECK_FILE" "$DECK_TSV" <<'PYEOF'
 import json, sys
+# Pin LF everywhere: this stage writes a TSV file AND a stdout summary that
+# bash parses — Windows \r\n translation would corrupt both.
+sys.stdout.reconfigure(newline="\n")
 deck = json.load(open(sys.argv[1]))
 # bash `read` with IFS=$'\t' collapses consecutive tabs (because tab is
 # whitespace), so empty fields would shift later columns. Replace empty
@@ -99,7 +109,9 @@ def s(v):
     if v is None or v == "":
         return SENTINEL
     return str(v).replace("\t", " ").replace("\n", "\\n")
-with open(sys.argv[2], "w") as f:
+# newline="\n": bash reads this file with IFS=$'\t' read, where a stray \r
+# (Windows text-mode translation) would glue onto the last field.
+with open(sys.argv[2], "w", newline="\n") as f:
     for c in deck["cards"]:
         v = c.get("verdict", {})
         row = [
@@ -119,6 +131,11 @@ with open(sys.argv[2], "w") as f:
             s(v.get("tone", "neutral")),
             s(c.get("description")),
             s(c.get("decision")),
+            s(c.get("kind", "")),
+            s(c.get("cfg", "")),
+            # Pointer is opaque to bash (passed straight back to the removal
+            # stage); raw dumps, never the "_" sentinel dance.
+            (json.dumps(c.get("pointer")) if c.get("pointer") is not None else ""),
         ]
         f.write("\t".join(row) + "\n")
 print(len(deck["cards"]), deck.get("budget", 200000))
@@ -134,9 +151,9 @@ fi
 
 # Read cards into parallel arrays. Sentinel "_" decodes back to empty (see
 # python emitter above for why this dance is needed).
-declare -a IDS NAMES SCOPES NAMESPACES PATHS TOKENS DESC_TOKENS PCTS USES LAST_USED DAYS SCORES LABELS TONES DESCS DECISIONS
+declare -a IDS NAMES SCOPES NAMESPACES PATHS TOKENS DESC_TOKENS PCTS USES LAST_USED DAYS SCORES LABELS TONES DESCS DECISIONS KINDS CFGS PTRS
 unsentinel() { [[ "$1" == "_" ]] && echo "" || echo "$1"; }
-while IFS=$'\t' read -r id name scope ns path tok dtok pct inv lu days score label tone desc dec; do
+while IFS=$'\t' read -r id name scope ns path tok dtok pct inv lu days score label tone desc dec kind cfg ptr; do
     IDS+=("$(unsentinel "$id")"); NAMES+=("$(unsentinel "$name")")
     SCOPES+=("$(unsentinel "$scope")"); NAMESPACES+=("$(unsentinel "$ns")")
     PATHS+=("$(unsentinel "$path")"); TOKENS+=("$(unsentinel "$tok")")
@@ -146,6 +163,8 @@ while IFS=$'\t' read -r id name scope ns path tok dtok pct inv lu days score lab
     SCORES+=("$(unsentinel "$score")"); LABELS+=("$(unsentinel "$label")")
     TONES+=("$(unsentinel "$tone")"); DESCS+=("$(unsentinel "$desc")")
     DECISIONS+=("$(unsentinel "$dec")")
+    KINDS+=("$(unsentinel "$kind")"); CFGS+=("$(unsentinel "$cfg")")
+    PTRS+=("$ptr")
 done < "$DECK_TSV"
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -398,33 +417,44 @@ do_apply() {
     local deleted_tokens=0 deleted_desc_tokens=0
     local -a delete_paths delete_names delete_scopes delete_tokens_per
 
-    # Tempfiles for plugin aggregation (bash 3 has no associative arrays)
-    local plugin_delete_tmp plugin_total_tmp
+    # Tempfiles for plugin/package aggregation (bash 3 has no associative arrays)
+    local plugin_delete_tmp plugin_total_tmp pipkg_delete_tmp pipkg_total_tmp
     plugin_delete_tmp=$(mktemp)
     plugin_total_tmp=$(mktemp)
+    pipkg_delete_tmp=$(mktemp)
+    pipkg_total_tmp=$(mktemp)
     # shellcheck disable=SC2064
-    trap "rm -f '$DECK_TSV' '$plugin_delete_tmp' '$plugin_total_tmp'; restore_term 2>/dev/null || true" EXIT
+    trap "rm -f '$DECK_TSV' '$plugin_delete_tmp' '$plugin_total_tmp' '$pipkg_delete_tmp' '$pipkg_total_tmp'; restore_term 2>/dev/null || true" EXIT
 
-    local -a mcp_names mcp_origins
+    local -a mcp_names mcp_origins mcp_kinds mcp_cfgs mcp_ptrs
     for ((i=0; i<TOTAL; i++)); do
         local s="${SCOPES[$i]}"
         if [[ "$s" == "plugin" ]] || [[ "$s" == "plugin-source" ]]; then
             echo "${NAMESPACES[$i]}" >> "$plugin_total_tmp"
+        elif [[ "$s" == "pi-package" ]]; then
+            echo "${NAMESPACES[$i]}" >> "$pipkg_total_tmp"
         fi
         case "${DECISIONS[$i]}" in
-            keep) ((keep++)) ;;
+            keep) ((keep++)) || true ;;
             delete)
-                ((delete++))
+                ((delete++)) || true
                 deleted_tokens=$((deleted_tokens + TOKENS[i]))
                 deleted_desc_tokens=$((deleted_desc_tokens + ${DESC_TOKENS[$i]:-0}))
                 if [[ "$s" == "plugin" ]] || [[ "$s" == "plugin-source" ]]; then
                     echo "${NAMESPACES[$i]}" >> "$plugin_delete_tmp"
+                elif [[ "$s" == "pi-package" ]]; then
+                    # Pi package-managed skill: never delete inside the
+                    # package — flag the package for `pi remove` instead.
+                    echo "${NAMESPACES[$i]}" >> "$pipkg_delete_tmp"
                 elif [[ "$s" == "mcp-plugin" ]]; then
                     # plugin-bundled MCP: can't edit the plugin — flag it
                     echo "${NAMESPACES[$i]#plugin:}" >> "$plugin_delete_tmp"
                 elif [[ "$s" == mcp-* ]]; then
                     mcp_names+=("${NAMES[$i]}")
                     mcp_origins+=("${PATHS[$i]}")
+                    mcp_kinds+=("${KINDS[$i]}")
+                    mcp_cfgs+=("${CFGS[$i]}")
+                    mcp_ptrs+=("${PTRS[$i]}")
                 else
                     delete_paths+=("${PATHS[$i]}")
                     delete_names+=("${NAMES[$i]}")
@@ -432,8 +462,8 @@ do_apply() {
                     delete_tokens_per+=("${TOKENS[$i]}")
                 fi
                 ;;
-            skip) ((skip++)) ;;
-            "") ((undecided++)) ;;
+            skip) ((skip++)) || true ;;
+            "") ((undecided++)) || true ;;
         esac
     done
 
@@ -456,7 +486,7 @@ do_apply() {
     printf "\n"
 
     if [[ "${#delete_paths[@]}" -gt 0 ]]; then
-        printf "${BOLD}Deletions (user/project/codex scope):${RESET}\n"
+        printf "${BOLD}Deletions (writable skill scopes):${RESET}\n"
         for ((j=0; j<${#delete_paths[@]}; j++)); do
             printf "  ${RED}✗${RESET}  %-30s ${DIM}%-8s %s${RESET}\n" "${delete_names[$j]}" "${delete_scopes[$j]}" "${delete_paths[$j]}"
         done
@@ -471,6 +501,18 @@ do_apply() {
         printf "\n"
     fi
 
+    # Pi package summary — one line per package showing "<deleted> of <total>
+    # swiped", with the `pi remove` command that owns the decision.
+    if [[ -s "$pipkg_delete_tmp" ]]; then
+        printf "${BOLD}Packages to review${RESET} ${DIM}(package skills cannot be deleted individually):${RESET}\n"
+        sort "$pipkg_delete_tmp" | uniq -c | while read -r n_delete pkg; do
+            local n_total
+            n_total=$(grep -cFx -- "$pkg" "$pipkg_total_tmp" || true)
+            [[ -z "$n_total" || "$n_total" -eq 0 ]] && n_total="$n_delete"
+            printf "  %-25s ${DIM}%s of %s swiped delete${RESET}  →  run ${BOLD}pi remove %s${RESET}\n" "$pkg" "$n_delete" "$n_total" "$pkg"
+        done
+        printf "\n"
+    fi
     # Plugin summary — one line per plugin showing "<deleted> of <total> swiped"
     if [[ -s "$plugin_delete_tmp" ]]; then
         printf "${BOLD}Plugins to review${RESET} ${DIM}(individual plugin skills cannot be deleted):${RESET}\n"
@@ -490,10 +532,10 @@ do_apply() {
     fi
 
     printf "${BOLD}Apply deletions?${RESET}  ${DIM}[y/N/save]${RESET}  "
-    stty echo icanon
+    stty echo icanon 2>/dev/null || true
     local answer
     read -r answer
-    stty -echo
+    stty -echo 2>/dev/null || true
 
     case "$answer" in
         y|Y|yes)
@@ -518,32 +560,98 @@ do_apply() {
                     "$ts" "$n" "$s" "$p" "${delete_tokens_per[$j]:-0}" >> "$LOG_FILE"
             done
             # MCP entries: remove from their config file (with .bak backup)
+            # MCP entries: remove from their config file (with .bak backup).
+            # Removal dispatches on the card's kind: claude (existing
+            # origin-based edit), pi (JSON pointer delete), opencode
+            # (comment-safe JSONC span removal — .json and .jsonc alike).
             if [[ ${mcp_names[@]+x} ]]; then
             for ((j=0; j<${#mcp_names[@]}; j++)); do
-                if python3 - "${mcp_names[$j]}" "${mcp_origins[$j]}" <<'PYMCP'
-import json, shutil, sys, time
-name, origin = sys.argv[1], sys.argv[2]
-proj = None
-if " [projects -> " in origin:
-    cfg_path, rest = origin.split(" [projects -> ", 1)
-    proj = rest.rstrip("]")
-else:
-    cfg_path = origin
+                if JANITOR_SCRIPT_DIR="$SCRIPT_DIR" PYTHONDONTWRITEBYTECODE=1 python3 - "${mcp_names[$j]}" "${mcp_origins[$j]}" "${mcp_kinds[$j]}" "${mcp_cfgs[$j]}" "${mcp_ptrs[$j]}" <<'PYMCP'
+import json, os, shutil, sys, time
+sys.stdout.reconfigure(newline="\n")
+# Shared JSONC helpers (same code mcp.sh reads with) — importing must not
+# litter the install dir with __pycache__.
+sys.path.insert(0, os.environ.get("JANITOR_SCRIPT_DIR", ""))
+from jsonc import jsonc_remove_key, parse_jsonc
+name, origin, kind = sys.argv[1], sys.argv[2], sys.argv[3]
+cfg_path, ptr_raw = sys.argv[4], sys.argv[5]
 try:
-    with open(cfg_path) as f:
-        data = json.load(f)
-except Exception as e:
-    sys.exit(f"cannot read {cfg_path}: {e}")
-target = data
-if proj is not None:
-    target = data.get("projects", {}).get(proj, {})
-servers = target.get("mcpServers", {})
-if name not in servers:
-    sys.exit(f"{name} not present in {cfg_path}")
-shutil.copy2(cfg_path, cfg_path + ".bak-janitor-" + time.strftime("%Y%m%d%H%M%S"))
-del servers[name]
-with open(cfg_path, "w") as f:
-    json.dump(data, f, indent=2)
+    pointer = json.loads(ptr_raw) if ptr_raw not in ("", "_") else None
+except Exception:
+    pointer = None
+
+def backup(path):
+    shutil.copy2(path, path + ".bak-janitor-" + time.strftime("%Y%m%d%H%M%S"))
+
+
+if kind == "pi":
+    if not cfg_path or not pointer:
+        sys.exit("no config target recorded for %s" % name)
+    try:
+        with open(cfg_path, encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+    except Exception as e:
+        sys.exit("cannot read %s: %s" % (cfg_path, e))
+    target = data
+    for key in pointer[:-1]:
+        if not isinstance(target, dict) or key not in target:
+            sys.exit("%s not present in %s" % (name, cfg_path))
+        target = target[key]
+    if not isinstance(target, dict) or pointer[-1] not in target:
+        sys.exit("%s not present in %s" % (name, cfg_path))
+    backup(cfg_path)
+    del target[pointer[-1]]
+    with open(cfg_path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+elif kind == "opencode":
+    if not cfg_path or not pointer:
+        sys.exit("no config target recorded for %s" % name)
+    try:
+        with open(cfg_path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except Exception as e:
+        sys.exit("cannot read %s: %s" % (cfg_path, e))
+    try:
+        new_text = jsonc_remove_key(text, pointer)
+        parse_jsonc(new_text)  # still valid after the edit ...
+        try:
+            jsonc_remove_key(new_text, pointer)
+            still_there = True
+        except ValueError:
+            still_there = False
+        if still_there:
+            raise ValueError("key still present after edit")
+    except Exception as e:
+        sys.exit("refusing to edit %s: %s" % (cfg_path, e))
+    backup(cfg_path)
+    with open(cfg_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(new_text)
+elif kind in ("claude", ""):
+    # "" = deck saved before kinds existed; all such cards are Claude's.
+    proj = None
+    if " [projects -> " in origin:
+        cfg_path, rest = origin.split(" [projects -> ", 1)
+        proj = rest.rstrip("]")
+    else:
+        cfg_path = origin
+    try:
+        with open(cfg_path) as f:
+            data = json.load(f)
+    except Exception as e:
+        sys.exit(f"cannot read {cfg_path}: {e}")
+    target = data
+    if proj is not None:
+        target = data.get("projects", {}).get(proj, {})
+    servers = target.get("mcpServers", {})
+    if name not in servers:
+        sys.exit(f"{name} not present in {cfg_path}")
+    shutil.copy2(cfg_path, cfg_path + ".bak-janitor-" + time.strftime("%Y%m%d%H%M%S"))
+    del servers[name]
+    with open(cfg_path, "w") as f:
+        json.dump(data, f, indent=2)
+else:
+    sys.exit("unknown MCP kind: %s" % kind)
 PYMCP
                 then
                     printf "${GREEN}removed${RESET}  MCP %s ${DIM}(%s)${RESET}\n" "${mcp_names[$j]}" "${mcp_origins[$j]}"
@@ -561,6 +669,7 @@ PYMCP
             local save_file="$DECISIONS_DIR/swipe-$(date -u +%Y-%m-%dT%H%M%S).json"
             python3 - "$DECK_FILE" "$save_file" "${DECISIONS[@]}" <<'PYEOF'
 import json, sys
+sys.stdout.reconfigure(newline="\n")
 deck = json.load(open(sys.argv[1]))
 out = sys.argv[2]
 decisions = sys.argv[3:]
@@ -592,18 +701,18 @@ if [[ "$SKIP_TUI" == "0" ]]; then
         case "$key" in
             $'\033[D'|h|d|D)
                 DECISIONS[$i]="delete"
-                ((i++))
+                ((i++)) || true
                 ;;
             $'\033[C'|l|k|K)
                 DECISIONS[$i]="keep"
-                ((i++))
+                ((i++)) || true
                 ;;
             $'\033[B'|j|s|S|' ')
                 DECISIONS[$i]="skip"
-                ((i++))
+                ((i++)) || true
                 ;;
             u|U)
-                [[ $i -gt 0 ]] && { ((i--)); DECISIONS[$i]=""; }
+                [[ $i -gt 0 ]] && { ((i--)) || true; DECISIONS[$i]=""; }
                 ;;
             i|I)
                 show_inspect "$i"

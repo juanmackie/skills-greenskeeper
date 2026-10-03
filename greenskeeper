@@ -1,0 +1,91 @@
+#!/bin/bash
+# Skills Greenskeeper - standalone entry point.
+# One program for every skill on the machine, across Claude Code, Codex,
+# OpenCode and Pi: user, project, plugin, source and package scopes, plus
+# subagents, MCP servers, prompt templates and extensions.
+#
+# Usage:
+#   greenskeeper <command> [args...]
+#
+#   report [--brief]                     Health check: inventory, duplicates, broken skills
+#   value [--weeks N] [--budget N] [--json]
+#       Token cost + usage per skill
+#   security [--path DIR] [--json]       Prompt-injection / malicious-pattern scan
+#   discover <query|url> [--limit N] [--compare <name>] [--json]
+#       Find skills on GitHub, or pre-check one before installing
+#   fix [--dry-run] [--apply] [--prune]  Preview fixes (apply writes, prune removes debris)
+#   swipe [--deck FILE] [--apply FILE]   Interactive keep/delete/skip triage (needs a TTY)
+#   mcp [--weeks N] [--json]             MCP server inventory + real usage
+#   scan                                 Raw JSON inventory (for scripts and debugging)
+#   dashboard [--no-open]                Visual HTML dashboard + snapshot history
+#
+# Requires: bash, python3.7+ (curl for discover). No pip installs, no node.
+#
+# On Windows run from Git Bash, or via greenskeeper.cmd from CMD / PowerShell.
+# The swipe TUI needs a real interactive terminal — not an agent's shell.
+
+set -euo pipefail
+
+JANITOR_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPTS="$JANITOR_DIR/scripts"
+
+command -v python3 &>/dev/null || { echo "ERROR: python3 required" >&2; exit 1; }
+
+show_help() {
+    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+CMD="${1:-}"
+case "$CMD" in
+    ""|-h|--help|help)
+        show_help
+        exit 0
+        ;;
+    report)
+        shift
+        if [[ "${1:-}" == "--brief" ]]; then
+            exec bash "$SCRIPTS/scan.sh"
+        fi
+        bash "$SCRIPTS/scan.sh"
+        bash "$SCRIPTS/lint.sh"
+        bash "$SCRIPTS/detect_dupes.sh"
+        ;;
+    value)
+        shift
+        exec bash "$SCRIPTS/value.sh" "$@"
+        ;;
+    security)
+        shift
+        exec bash "$SCRIPTS/security.sh" "$@"
+        ;;
+    discover)
+        shift
+        command -v curl &>/dev/null || { echo "ERROR: curl required for discover" >&2; exit 1; }
+        exec bash "$SCRIPTS/discover.sh" "$@"
+        ;;
+    fix)
+        shift
+        exec bash "$SCRIPTS/fix.sh" "$@"
+        ;;
+    swipe)
+        shift
+        exec bash "$SCRIPTS/swipe.sh" "$@"
+        ;;
+    mcp)
+        shift
+        exec bash "$SCRIPTS/mcp.sh" "$@"
+        ;;
+    scan)
+        shift
+        exec bash "$SCRIPTS/scan.sh" "$@"
+        ;;
+    dashboard)
+        shift
+        exec bash "$SCRIPTS/dashboard.sh" "$@"
+        ;;
+    *)
+        echo "Unknown command: $CMD" >&2
+        echo "Run 'greenskeeper --help' for usage." >&2
+        exit 1
+        ;;
+esac

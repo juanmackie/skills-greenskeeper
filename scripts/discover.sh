@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Skill Discovery
+# Skills Greenskeeper - Skill Discovery
 # Dispatches to search.sh (find skills on GitHub) or precheck.sh (analyze a
 # specific skill URL/path before installing) based on argument shape.
 

@@ -1,5 +1,29 @@
 # Changelog
 
+> Fork note: Skills Greenskeeper is a friendly fork of [Skills Janitor](https://github.com/khendzel/skills-janitor) by Krzysztof Hendzel. Entries below v1.9.0 describe his original project, kept verbatim as history. Full credit in [README Attribution](README.md#attribution).
+
+## v1.9.0 (2026-10-03)
+
+### Unified multi-harness cleanup
+
+The greenskeeper is now one program for every skill on the machine, across **Claude Code, Codex, OpenCode and Pi** — plus a standalone `greenskeeper` launcher so it runs without any plugin host.
+
+- **Inventory (`paths.sh`, `scan.sh`)** — new `opencode-user` / `opencode-project` scopes (`~/.config/opencode/skills`, `.opencode/skills`, `$OPENCODE_CONFIG_DIR`) and `pi-user` / `pi-project` / `pi-package` (`$PI_CODING_AGENT_DIR/skills`, `.pi/skills`, skills inside Pi npm/git/local packages resolved from `settings.json` + `pi.skills` manifests). Scope qualification is generic (`<platform>-<scope>`) instead of hardcoded Codex. `lint.sh` / `fix.sh` walk the same iterator and never touch plugin, source or package content. The scan JSON also inventories OpenCode agents/commands and Pi prompts/extensions.
+- **Usage (`usage.sh`)** — OpenCode skill loads from the SQLite session store (windowed, SELECT-only) plus a legacy-JSON fallback, and Pi loads from session JSONL (`read` calls on `SKILL.md`, forced `/skill:name`). Merged into the same `usage-history.json`, so swipe/value verdicts stay honest on the new harnesses.
+- **MCP (`mcp.sh`, swipe apply)** — OpenCode (`opencode.json[c]`, comment-tolerant reader) and Pi (`mcp.json`, `mcp-adapter.json`) servers inventoried with `kind`/`cfg`/`pointer` provenance and real usage from each harness's store. Removals dispatch per kind with timestamped `.bak` backups; new shared `scripts/jsonc.py` removes OpenCode `.jsonc` keys by byte span (comments survive; the edit is re-parsed and key-absence is verified before writing).
+- **Swipe (`swipe.sh`)** — deck carries provenance through to removal; Pi packages aggregate into a `pi remove <source>` review section like Claude plugins; fixed `set -e` counter increments (`((n++))`) that aborted the apply pass and the TUI loop on the first decision.
+- **Windows hardening** — every embedded python pins LF stdout (`sys.stdout.reconfigure`), python-emitted paths are normalized to forward slashes, and bash readers strip stray CRs (this class of bug silently dropped plugin and package skills on Windows).
+- **Tests** — new `tests/test_multiplatform.sh` (35 assertions: scopes, lint sections, fix package-skip, cross-harness usage, MCP provenance/usage/disabled, jsonc parse + first/middle/last removal, end-to-end `swipe --apply` with backups).
+- **Dashboard** — visual HTML report with context cost, activity trend, health score and snapshot history, ported from upstream PR #3 by Buzzwoo and adapted to the multi-harness schemas (`scripts/dashboard.sh`, `greenskeeper dashboard`).
+- **Rebrand** — Skills Greenskeeper (`juanmackie/skills-greenskeeper`): new name across docs, output banners, log/config paths and the `greenskeeper` launcher (`greenskeeper.cmd` on Windows). Fork of [Skills Janitor](https://github.com/khendzel/skills-janitor), credited in README Attribution; pre-v1.9 history kept verbatim.
+
+### Fixed
+
+- `swipe.sh` apply/TUI died silently on the first keep/delete/skip decision (`((delete++))` under `set -e` exits when the old value is 0). All counters use the repo's `|| true` idiom now.
+- `swipe.sh` piped-stdin apply (`--apply` in scripts) died on `stty` without a TTY; those calls tolerate non-terminals now.
+- `_object_entries` in the JSONC remover rejected valid files with trailing commas inside objects.
+- `search.sh` installed-check and `compare.sh` lookup previously saw Claude + Codex only; both now cover every harness.
+
 ## v1.8.0 (2026-09-30)
 
 Final feature release: the project moves to maintenance mode. Claude Code now covers the core use case natively: `/skill-doctor` (per-skill context cost and usage, never-invoked skills), `/doctor` (unused skills, MCP servers and plugins against their context cost, with fixes) and `/doctor prompt-audit` (outdated or conflicting instructions in CLAUDE.md, skills, agents and commands). If you only use Claude Code and only want to trim context, use those.

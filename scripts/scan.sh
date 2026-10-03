@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Scan & Inventory
+# Skills Greenskeeper - Scan & Inventory
 # Discovers all skills across all scopes and outputs a JSON inventory.
 #
 # Performance note: bash collects one TSV row per skill/agent/command and a
@@ -12,16 +12,21 @@ set -euo pipefail
 
 command -v python3 &>/dev/null || { echo "ERROR: python3 required" >&2; exit 1; }
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    echo "Usage: scan.sh"
+    echo ""
+    echo "JSON inventory of all skills (every harness and scope), agents,"
+    echo "plugins, commands, prompts and extensions. Powers every report."
+    exit 0
+fi
+
 # --- Load platform paths ---
 source "$(dirname "$0")/paths.sh"
 
 # Absolute path so the python pass can import tsv_reader.py regardless of cwd
 JANITOR_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
-USER_COMMANDS="$HOME/.claude/commands"
-PROJECT_COMMANDS="./.claude/commands"
-USER_AGENTS="$HOME/.claude/agents"
-PROJECT_AGENTS="./.claude/agents"
+# Agent/command dirs are enumerated inline below (Claude + OpenCode).
 
 # --- Row encoding ---
 # Tab-separated; literal tabs/newlines inside a value are replaced with a
@@ -30,7 +35,9 @@ PROJECT_AGENTS="./.claude/agents"
 SKILLS_TSV=$(mktemp -t janitor-scan.XXXXXX)
 AGENTS_TSV=$(mktemp -t janitor-scan.XXXXXX)
 COMMANDS_TSV=$(mktemp -t janitor-scan.XXXXXX)
-trap 'rm -f "$SKILLS_TSV" "$AGENTS_TSV" "$COMMANDS_TSV"' EXIT
+PROMPTS_TSV=$(mktemp -t janitor-scan.XXXXXX)
+EXTS_TSV=$(mktemp -t janitor-scan.XXXXXX)
+trap 'rm -f "$SKILLS_TSV" "$AGENTS_TSV" "$COMMANDS_TSV" "$PROMPTS_TSV" "$EXTS_TSV"' EXIT
 
 _f() {  # sanitize one field for the TSV row
     local v="${1:-}"
@@ -48,7 +55,7 @@ scan_skill() {
     skill_name=$(basename "$path")
 
     # Skip self (plugin data dir, not a real skill)
-    [[ "$skill_name" == "skills-janitor" ]] && return 0
+    [[ "$skill_name" == "skills-greenskeeper" ]] && return 0
 
     local qualified_name="$skill_name"
     if [[ -n "$namespace" ]]; then
@@ -127,11 +134,12 @@ scan_skill() {
         "$has_body" "$line_count" "$extra_files" >> "$SKILLS_TSV"
 }
 
-# Walk every registered skill directory (user/project/codex/plugin/source).
+# Walk every registered skill directory (user/project/codex/opencode/pi,
+# plugin/source/package).
 _scan_iter() {
     local parent_dir="$1" scope="$2" _platform="$3" namespace="${4:-}"
-    if [[ "$_platform" == "codex" ]]; then
-        scope="codex-${scope}"
+    if [[ "$_platform" != "claude" ]]; then
+        scope="${_platform}-${scope}"
     fi
     # No trailing slash on the glob: `*/` silently skips broken symlinks,
     # which must still appear in the inventory.
@@ -143,56 +151,112 @@ _scan_iter() {
 }
 for_each_skill_dir _scan_iter
 
-# --- Subagents (~/.claude/agents/*.md, ./.claude/agents/*.md) ---
+# --- Subagents (Claude + OpenCode markdown agents) ---
 # Agents are single markdown files with YAML frontmatter. Their descriptions
 # are always loaded into context, same as skill descriptions — often costing
-# MORE than skills — so the janitor inventories them too.
+# MORE than skills — so the greenskeeper inventories them too.
 scan_agent() {
-    local file="$1" scope="$2"
+    local file="$1" scope="$2" kind="$3"
     local agent_name description model word_count
     agent_name=$(basename "$file" .md)
     # Shared helper: handles block-scalar descriptions like the skill side
     description=$(extract_description "$file")
     model=$(awk 'NR==1 && /^---\r?$/{started=1; next} started && /^---\r?$/{exit} started && /^model:/{sub(/^model:[[:space:]]*/,""); print; exit}' "$file" || true)
     word_count=$(wc -w < "$file" | tr -d ' ')
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$(_f "$agent_name")" "$(_f "$scope")" "$(_f "$file")" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$(_f "$agent_name")" "$(_f "$scope")" "$(_f "$kind")" "$(_f "$file")" \
         "$(_f "$description")" "$(_f "$model")" "$word_count" >> "$AGENTS_TSV"
 }
-# Dedup: running from $HOME makes ./.claude/agents the same physical dir as
-# ~/.claude/agents — same aliasing paths.sh already handles for skills.
-_same_dir() {
-    local a b
-    a=$(cd "$1" 2>/dev/null && pwd -P || echo "a:$1")
-    b=$(cd "$2" 2>/dev/null && pwd -P || echo "b:$2")
-    [[ "$a" == "$b" ]]
+# Dedup: running from $HOME makes user/project pairs the same physical dir.
+_seen_adirs=""
+_scan_agent_dir() {
+    local dir="$1" scope="$2" kind="$3"
+    [[ -d "$dir" ]] || return 0
+    local real_dir
+    real_dir=$(cd "$dir" 2>/dev/null && pwd -P || echo "$dir")
+    case "|$_seen_adirs|" in *"|$real_dir|"*) return 0 ;; esac
+    _seen_adirs="$_seen_adirs|$real_dir"
+    for agent_file in "$dir"/*.md; do
+        [[ -f "$agent_file" ]] || continue
+        scan_agent "$agent_file" "$scope" "$kind"
+    done
 }
-if [[ -d "$USER_AGENTS" ]]; then
-    for agent_file in "$USER_AGENTS"/*.md; do
-        [[ -f "$agent_file" ]] || continue
-        scan_agent "$agent_file" "user"
-    done
-fi
-if [[ -d "$PROJECT_AGENTS" ]] && ! _same_dir "$PROJECT_AGENTS" "$USER_AGENTS"; then
-    for agent_file in "$PROJECT_AGENTS"/*.md; do
-        [[ -f "$agent_file" ]] || continue
-        scan_agent "$agent_file" "project"
-    done
-fi
+_scan_agent_dir "$HOME/.claude/agents" "user" "claude"
+_scan_agent_dir "./.claude/agents" "project" "claude"
+_scan_agent_dir "$HOME/.config/opencode/agents" "user" "opencode"
+_scan_agent_dir "./.opencode/agents" "project" "opencode"
 
-# --- Commands (same $HOME-cwd dedup as agents) ---
-if [[ -d "$USER_COMMANDS" ]]; then
-    for cmd_file in "$USER_COMMANDS"/*.md; do
+# --- Commands (Claude + OpenCode markdown commands, same dedup) ---
+_scan_cmd_dir() {
+    local dir="$1" scope="$2" kind="$3"
+    [[ -d "$dir" ]] || return 0
+    local real_dir
+    real_dir=$(cd "$dir" 2>/dev/null && pwd -P || echo "$dir")
+    case "|$_seen_adirs|" in *"|$real_dir|"*) return 0 ;; esac
+    _seen_adirs="$_seen_adirs|$real_dir"
+    for cmd_file in "$dir"/*.md; do
         [[ -f "$cmd_file" ]] || continue
-        printf '%s\t%s\t%s\n' "$(_f "$(basename "$cmd_file" .md)")" "user" "$(_f "$cmd_file")" >> "$COMMANDS_TSV"
+        printf '%s\t%s\t%s\t%s\n' "$(_f "$(basename "$cmd_file" .md)")" "$scope" "$(_f "$kind")" "$(_f "$cmd_file")" >> "$COMMANDS_TSV"
     done
-fi
-if [[ -d "$PROJECT_COMMANDS" ]] && ! _same_dir "$PROJECT_COMMANDS" "$USER_COMMANDS"; then
-    for cmd_file in "$PROJECT_COMMANDS"/*.md; do
-        [[ -f "$cmd_file" ]] || continue
-        printf '%s\t%s\t%s\n' "$(_f "$(basename "$cmd_file" .md)")" "project" "$(_f "$cmd_file")" >> "$COMMANDS_TSV"
+}
+_scan_cmd_dir "$HOME/.claude/commands" "user" "claude"
+_scan_cmd_dir "./.claude/commands" "project" "claude"
+_scan_cmd_dir "$HOME/.config/opencode/commands" "user" "opencode"
+_scan_cmd_dir "./.opencode/commands" "project" "opencode"
+
+# --- Pi prompt templates (user/project prompts/*.md, direct children only) ---
+# Templates become /commands; their descriptions show in completion but are
+# NOT always-loaded context, so they are reported, not costed.
+PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+_scan_prompt_dir() {
+    local dir="$1" scope="$2"
+    [[ -d "$dir" ]] || return 0
+    local real_dir
+    real_dir=$(cd "$dir" 2>/dev/null && pwd -P || echo "$dir")
+    case "|$_seen_adirs|" in *"|$real_dir|"*) return 0 ;; esac
+    _seen_adirs="$_seen_adirs|$real_dir"
+    for prompt_file in "$dir"/*.md; do
+        [[ -f "$prompt_file" ]] || continue
+        printf '%s\t%s\t%s\t%s\n' \
+            "$(_f "$(basename "$prompt_file" .md)")" "$scope" \
+            "$(_f "$prompt_file")" "$(_f "$(extract_description "$prompt_file")")" >> "$PROMPTS_TSV"
     done
-fi
+}
+_scan_prompt_dir "$PI_AGENT_DIR/prompts" "pi-user"
+_scan_prompt_dir "./.pi/prompts" "pi-project"
+
+# --- Pi extensions (user/project extensions: .ts/.js files + index dirs) ---
+# Extensions are code running with user permissions — inventoried for the
+# security report surface, not counted as context.
+_scan_ext_dir() {
+    local dir="$1" scope="$2"
+    [[ -d "$dir" ]] || return 0
+    local real_dir
+    real_dir=$(cd "$dir" 2>/dev/null && pwd -P || echo "$dir")
+    case "|$_seen_adirs|" in *"|$real_dir|"*) return 0 ;; esac
+    _seen_adirs="$_seen_adirs|$real_dir"
+    local entry files name
+    for entry in "$dir"/*.ts "$dir"/*.js; do
+        [[ -f "$entry" ]] || continue
+        name=$(basename "$entry")
+        name="${name%.*}"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$(_f "$name")" "$scope" \
+            "$(_f "$entry")" "$(_f "$entry")" "1" >> "$EXTS_TSV"
+    done
+    for entry in "$dir"/*/; do
+        [[ -d "$entry" ]] || continue
+        name=$(basename "$entry")
+        local index=""
+        [[ -f "${entry}index.ts" ]] && index="${entry}index.ts"
+        [[ -z "$index" && -f "${entry}index.js" ]] && index="${entry}index.js"
+        [[ -z "$index" ]] && continue
+        files=$(find "$entry" -type f \( -name '*.ts' -o -name '*.js' \) 2>/dev/null | wc -l | tr -d ' ')
+        printf '%s\t%s\t%s\t%s\t%s\n' "$(_f "$name")" "$scope" \
+            "$(_f "${entry%/}")" "$(_f "$index")" "$files" >> "$EXTS_TSV"
+    done
+}
+_scan_ext_dir "$PI_AGENT_DIR/extensions" "pi-user"
+_scan_ext_dir "./.pi/extensions" "pi-project"
 
 # --- Broken symlinks: count across ALL skill roots, not just user scope ---
 broken_count=0
@@ -205,7 +269,7 @@ _broken_iter() {
 for_each_skill_dir _broken_iter
 
 # --- Render everything in ONE python pass ---
-export SKILLS_TSV AGENTS_TSV COMMANDS_TSV BROKEN_COUNT="$broken_count"
+export SKILLS_TSV AGENTS_TSV COMMANDS_TSV PROMPTS_TSV EXTS_TSV BROKEN_COUNT="$broken_count"
 export INSTALLED_PLUGINS_FILE JANITOR_SCRIPT_DIR
 export KNOWN_MARKETPLACES_FILE="$HOME/.claude/plugins/known_marketplaces.json"
 # Importing tsv_reader must not litter the (possibly read-only) install dir
@@ -215,6 +279,8 @@ export PYTHONDONTWRITEBYTECODE=1
 python3 <<'PYEOF'
 import json, os, subprocess, sys
 from datetime import datetime, timezone
+# Pin LF on stdout (Windows pipe \r\n translation breaks bash consumers).
+sys.stdout.reconfigure(newline="\n")
 
 # The TSV reader lives in tsv_reader.py (same dir as this script) so tests can
 # import it directly; it keeps the newline="\n" pin against CR record-splitting.
@@ -245,11 +311,12 @@ for r in read_tsv(os.environ.get("SKILLS_TSV", ""), 15):
     })
 
 agents = []
-for r in read_tsv(os.environ.get("AGENTS_TSV", ""), 6):
-    name, scope, path, desc, model, words = r
+for r in read_tsv(os.environ.get("AGENTS_TSV", ""), 7):
+    name, scope, kind, path, desc, model, words = r
     agents.append({
         "name": name,
         "scope": scope,
+        "kind": kind,
         "path": path,
         "description": desc,
         "model": model,
@@ -257,9 +324,32 @@ for r in read_tsv(os.environ.get("AGENTS_TSV", ""), 6):
     })
 
 commands = []
-for r in read_tsv(os.environ.get("COMMANDS_TSV", ""), 3):
-    name, scope, path = r
-    commands.append({"name": name, "scope": scope, "path": path})
+for r in read_tsv(os.environ.get("COMMANDS_TSV", ""), 4):
+    name, scope, kind, path = r
+    commands.append({"name": name, "scope": scope, "kind": kind, "path": path})
+
+prompts = []
+for r in read_tsv(os.environ.get("PROMPTS_TSV", ""), 4):
+    name, scope, path, desc = r
+    prompts.append({
+        "name": name,
+        "scope": scope,
+        "kind": "pi",
+        "path": path,
+        "description": desc,
+    })
+
+extensions = []
+for r in read_tsv(os.environ.get("EXTS_TSV", ""), 5):
+    name, scope, path, entry, files = r
+    extensions.append({
+        "name": name,
+        "scope": scope,
+        "kind": "pi",
+        "path": path,
+        "entry": entry,
+        "files": int(files or 0),
+    })
 
 # --- Plugins: installed instances + update availability ---
 # update_available compares the installed commit against the HEAD of the
@@ -330,6 +420,8 @@ out = {
     "agents": agents,
     "plugins": plugins,
     "commands": commands,
+    "prompts": prompts,
+    "extensions": extensions,
     "broken_symlinks": int(os.environ.get("BROKEN_COUNT", "0") or 0),
 }
 print(json.dumps(out, indent=2))

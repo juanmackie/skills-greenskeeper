@@ -6,7 +6,7 @@ argument-hint: "[--path <dir>] [--json]"
 version: 1.6.0
 author: Krzysztof Hendzel <krzysztoff.hendzel@gmail.com>
 license: MIT
-compatibility: Designed for Claude Code. Requires bash 3.2+ (macOS default works). Reads local skill files only; no network access.
+compatibility: Works with Claude Code, Codex, OpenCode and Pi. Requires bash 3.2+ (macOS default works). Reads local skill files only; no network access.
 tags:
   - skills
   - security
@@ -21,7 +21,7 @@ Heuristic scan of skill content for prompt-injection and malicious patterns.
 
 ## Overview
 
-A skill is text your agent trusts: its SKILL.md is read as instructions and its scripts run on your machine. Public research (Snyk's ToxicSkills, 2026) found prompt injection in roughly a third of tested community skills. This scan flags the known bad shapes across every installed skill, in every scope (user, project, codex, plugin):
+A skill is text your agent trusts: its SKILL.md is read as instructions and its scripts run on your machine. Public research (Snyk's ToxicSkills, 2026) found prompt injection in roughly a third of tested community skills. This scan flags the known bad shapes across every installed skill and extension, in every scope (Claude user/project/plugin/source, Codex, OpenCode, Pi user/project/package):
 
 - **Injection phrases** — "ignore all previous instructions", "do not tell the user"
 - **Hidden instructions** — imperative text in HTML comments (invisible when rendered), zero-width/bidi unicode between plain characters
@@ -32,7 +32,7 @@ Findings are heuristics, not proof: a RISK verdict means "read this before trust
 
 ## Prerequisites
 
-- Claude Code with the skills-janitor plugin installed (provides `scripts/security.sh`)
+- The skills-greenskeeper plugin installed (provides `scripts/security.sh`) — or a standalone clone (run `./greenskeeper security` instead)
 - bash 3.2+ (the stock macOS bash works; no external dependencies, no network access)
 
 ## Instructions
@@ -40,9 +40,9 @@ Findings are heuristics, not proof: a RISK verdict means "read this before trust
 ### Step 1: Run the scan
 
 ```bash
-bash ~/.claude/skills/skills-janitor/scripts/security.sh           # all installed skills
-bash ~/.claude/skills/skills-janitor/scripts/security.sh --json    # machine-readable
-bash ~/.claude/skills/skills-janitor/scripts/security.sh --path ~/some/skill-dir   # one directory
+bash ~/.claude/skills/skills-greenskeeper/scripts/security.sh           # all installed skills
+bash ~/.claude/skills/skills-greenskeeper/scripts/security.sh --json    # machine-readable
+bash ~/.claude/skills/skills-greenskeeper/scripts/security.sh --path ~/some/skill-dir   # one directory
 ```
 
 ### Step 2: Present verdicts honestly

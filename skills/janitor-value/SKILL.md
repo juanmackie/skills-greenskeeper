@@ -6,7 +6,7 @@ argument-hint: "[--weeks N] [--budget N] [--json]"
 version: 1.7.0
 author: Krzysztof Hendzel <krzysztoff.hendzel@gmail.com>
 license: MIT
-compatibility: Designed for Claude Code. Requires bash 3.2+ (macOS default works). Reads local Claude Code data only (~/.claude/skills, ~/.claude/agents, session history).
+compatibility: Works with Claude Code, Codex, OpenCode and Pi. Requires bash 3.2+ (macOS default works). Reads local harness data only (skills, agents, session history).
 tags:
   - skills
   - context-window
@@ -27,9 +27,9 @@ Replaces the v1.2 split between `/janitor-tokens` (cost only) and `/janitor-usag
 
 ## Prerequisites
 
-- Claude Code with the skills-janitor plugin installed (provides `scripts/value.sh`)
+- The skills-greenskeeper plugin installed (provides `scripts/value.sh`) — or a standalone clone (run `./greenskeeper value` instead)
 - bash 3.2+ (the stock macOS bash works; no external dependencies)
-- Read access to `~/.claude/skills`, `~/.claude/agents`, and local Claude Code session history
+- Read access to installed skills, agents, and local session history (Claude, Codex, OpenCode, Pi)
 - No authentication or API keys required — the script reads local files only
 
 ## Instructions
@@ -37,7 +37,7 @@ Replaces the v1.2 split between `/janitor-tokens` (cost only) and `/janitor-usag
 ### Step 1: Run the value script
 
 ```bash
-bash ~/.claude/skills/skills-janitor/scripts/value.sh [--weeks N] [--budget N] [--json]
+bash ~/.claude/skills/skills-greenskeeper/scripts/value.sh [--weeks N] [--budget N] [--json]
 ```
 
 - `--weeks N` — usage lookback window (default: 4)
@@ -87,13 +87,13 @@ Followed by a summary:
 
 **Input**: "Are my skills worth their token cost?"
 
-**Output**: Run `bash ~/.claude/skills/skills-janitor/scripts/value.sh`, then present the table sorted by waste and the summary line, e.g. "Always-loaded total: 8,420 tokens (4.2% of 200k budget). 6 of 31 skills unused in 4 weeks; top waster: `heavy-skill` (1,900 tokens, never used)."
+**Output**: Run `bash ~/.claude/skills/skills-greenskeeper/scripts/value.sh`, then present the table sorted by waste and the summary line, e.g. "Always-loaded total: 8,420 tokens (4.2% of 200k budget). 6 of 31 skills unused in 4 weeks; top waster: `heavy-skill` (1,900 tokens, never used)."
 
 ### Example 2: Longer lookback, custom budget
 
 **Input**: "Check skill usage over the last quarter against a 500k window."
 
-**Output**: Run `bash ~/.claude/skills/skills-janitor/scripts/value.sh --weeks 12 --budget 500000` and present the same table with the adjusted lookback and percentages.
+**Output**: Run `bash ~/.claude/skills/skills-greenskeeper/scripts/value.sh --weeks 12 --budget 500000` and present the same table with the adjusted lookback and percentages.
 
 ### Example 3: Machine-readable output
 
@@ -103,7 +103,7 @@ Followed by a summary:
 
 ### MCP servers (v1.7)
 
-For the MCP side of context cost, run `bash {baseDir}/../../scripts/mcp.sh [--weeks N]` — inventories every configured server (user, project, plugin) with REAL call counts from session transcripts, and lists servers unused in the window. No token guesses: schemas live server-side, so the janitor reports calls, distinct tools used, and last-used instead.
+For the MCP side of context cost, run `bash {baseDir}/../../scripts/mcp.sh [--weeks N]` — inventories every configured server (user, project, plugin) with REAL call counts from session transcripts, and lists servers unused in the window. No token guesses: schemas live server-side, so the greenskeeper reports calls, distinct tools used, and last-used instead.
 
 ## Resources
 

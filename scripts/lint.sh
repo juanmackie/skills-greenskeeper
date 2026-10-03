@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Lint Check
+# Skills Greenskeeper - Lint Check
 # Validates skills against best practices
 
 set -euo pipefail
@@ -7,8 +7,12 @@ set -euo pipefail
 # --- Load platform paths ---
 source "$(dirname "$0")/paths.sh"
 
-USER_SKILLS="$CLAUDE_USER_SKILLS"
-PROJECT_SKILLS="$CLAUDE_PROJECT_SKILLS"
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    echo "Usage: lint.sh"
+    echo ""
+    echo "Frontmatter and content checks for every writable skill, every harness."
+    exit 0
+fi
 
 ISSUES=0
 WARNINGS=0
@@ -33,7 +37,7 @@ lint_skill() {
     name=$(basename "$path")
 
     # Skip self
-    [[ "$name" == "skills-janitor" ]] && return
+    [[ "$name" == "skills-greenskeeper" ]] && return
 
     # Check if symlink is broken
     if [[ -L "$path" && ! -e "$path" ]]; then
@@ -151,50 +155,52 @@ lint_skill() {
     fi
 }
 
-echo "=== Skills Janitor - Lint Report ==="
+echo "=== Skills Greenskeeper - Lint Report ==="
 echo ""
 
-echo "--- User Skills ($USER_SKILLS) ---"
-if [[ -d "$USER_SKILLS" ]]; then
-    for skill_dir in "$USER_SKILLS"/*; do
-        [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
-        lint_skill "${skill_dir%/}" "user"
-    done
-fi
-
-# Only scan project skills if they're different from user skills
-USER_REAL=$(cd "$USER_SKILLS" 2>/dev/null && pwd -P || echo "")
-PROJECT_REAL=$(cd "$PROJECT_SKILLS" 2>/dev/null && pwd -P || echo "")
-if [[ -d "$PROJECT_SKILLS" && "$USER_REAL" != "$PROJECT_REAL" ]]; then
-    echo ""
-    echo "--- Project Skills ($PROJECT_SKILLS) ---"
-    for skill_dir in "$PROJECT_SKILLS"/*; do
-        [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
-        lint_skill "${skill_dir%/}" "project"
-    done
-fi
-
-# Scan Codex skills
-if [[ -d "$CODEX_USER_SKILLS" ]]; then
-    echo ""
-    echo "--- Codex User Skills ($CODEX_USER_SKILLS) ---"
-    for skill_dir in "$CODEX_USER_SKILLS"/*; do
-        [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
-        lint_skill "${skill_dir%/}" "codex-user"
-    done
-fi
-if [[ -d "$CODEX_PROJECT_SKILLS" ]]; then
-    CODEX_P_REAL=$(cd "$CODEX_PROJECT_SKILLS" 2>/dev/null && pwd -P || echo "")
-    CODEX_U_REAL=$(cd "$CODEX_USER_SKILLS" 2>/dev/null && pwd -P || echo "")
-    if [[ "$CODEX_P_REAL" != "$CODEX_U_REAL" ]]; then
-        echo ""
-        echo "--- Codex Project Skills ($CODEX_PROJECT_SKILLS) ---"
-        for skill_dir in "$CODEX_PROJECT_SKILLS"/*; do
-            [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
-            lint_skill "${skill_dir%/}" "codex-project"
-        done
+# Lint every user/project skill dir across all harnesses. Plugin, source and
+# package skills are read-only (owned by a plugin manager or `pi`) — they are
+# covered by scan/security, never linted or fixed here.
+_lint_seen=""
+_lint_first=true
+_lint_iter() {
+    local parent_dir="$1" scope="$2" _platform="$3"
+    [[ "$scope" == "plugin" || "$scope" == "plugin-source" || "$scope" == "package" ]] && return 0
+    local label="$scope" plat_disp=""
+    if [[ "$_platform" != "claude" ]]; then
+        label="${_platform}-${scope}"
+        case "$_platform" in
+            codex) plat_disp="Codex " ;;
+            opencode) plat_disp="OpenCode " ;;
+            pi) plat_disp="Pi " ;;
+            *) plat_disp="$_platform " ;;
+        esac
     fi
-fi
+    local header scope_disp
+    case "$scope" in
+        user) scope_disp="User" ;;
+        project) scope_disp="Project" ;;
+        *) scope_disp="$scope" ;;
+    esac
+    header="${plat_disp}${scope_disp}"
+    # Dedup: running from $HOME makes ./.claude/skills the same physical dir
+    # as ~/.claude/skills (same aliasing paths.sh dedups for skills).
+    local real_dir
+    real_dir=$(cd "$parent_dir" 2>/dev/null && pwd -P || echo "$parent_dir")
+    case "|$_lint_seen|" in *"|$real_dir|"*) return 0 ;; esac
+    _lint_seen="$_lint_seen|$real_dir"
+    if [[ "$_lint_first" == "true" ]]; then
+        _lint_first=false
+    else
+        echo ""
+    fi
+    echo "--- $header Skills ($parent_dir) ---"
+    for skill_dir in "$parent_dir"/*; do
+        [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
+        lint_skill "${skill_dir%/}" "$label"
+    done
+}
+for_each_skill_dir _lint_iter
 
 echo ""
 echo "=== Summary ==="

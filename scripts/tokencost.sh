@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Context Window Token Cost
+# Skills Greenskeeper - Context Window Token Cost
 # Shows how many tokens each skill's system prompt consumes
 
 set -euo pipefail
@@ -49,7 +49,7 @@ scan_skills() {
         [[ -d "$skill_dir" ]] || continue
         local name
         name=$(basename "$skill_dir")
-        [[ "$name" == "skills-janitor" ]] && continue
+        [[ "$name" == "skills-greenskeeper" ]] && continue
 
         local skill_file=""
         [[ -f "$skill_dir/SKILL.md" ]] && skill_file="$skill_dir/SKILL.md"
@@ -83,17 +83,22 @@ scan_skills() {
     done
 }
 
-# Scan all platforms (Claude Code + Codex + plugins + sources)
-_token_scan() { scan_skills "$1" "$2" "$4"; }
+# Scan all harnesses (Claude Code + Codex + OpenCode + Pi + plugins + sources)
+_token_scan() {
+    local _scope="$2"
+    [[ "$3" != "claude" ]] && _scope="$3-$2"
+    scan_skills "$1" "$_scope" "$4"
+}
 for_each_skill_dir _token_scan
 
-# --- Subagents: their descriptions are always-loaded too (~/.claude/agents) ---
+# --- Subagents: their descriptions are always-loaded too (~/.claude/agents,
+# ~/.config/opencode/agents) ---
 export AGENTS_TMPFILE=$(mktemp)
 trap "rm -f $TMPFILE $AGENTS_TMPFILE" EXIT
 # Realpath dedup: from $HOME, ./.claude/agents IS ~/.claude/agents — without
 # this the always-loaded agents total doubles.
 _seen_agents_dirs=""
-for _agents_dir in "$HOME/.claude/agents" "./.claude/agents"; do
+for _agents_dir in "$HOME/.claude/agents" "./.claude/agents" "$HOME/.config/opencode/agents" "./.opencode/agents"; do
     [[ -d "$_agents_dir" ]] || continue
     _agents_real=$(cd "$_agents_dir" 2>/dev/null && pwd -P || echo "$_agents_dir")
     case "|$_seen_agents_dirs|" in *"|$_agents_real|"*) continue ;; esac
@@ -116,6 +121,8 @@ python3 << 'PYEOF'
 import json
 import os
 import sys
+# Pin LF on stdout (Windows pipe \r\n translation breaks bash consumers).
+sys.stdout.reconfigure(newline="\n")
 
 JSON_OUTPUT = os.environ.get("JSON_OUTPUT", "false") == "true"
 BUDGET = int(os.environ.get("BUDGET", "200000"))
@@ -249,7 +256,7 @@ if JSON_OUTPUT:
     }
     print(json.dumps(output, indent=2))
 else:
-    print("=== Skills Janitor - Context Window Cost ===")
+    print("=== Skills Greenskeeper - Context Window Cost ===")
     print(f"Budget: {BUDGET:,} tokens")
     print()
 

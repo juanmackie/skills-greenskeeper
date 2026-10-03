@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Skill Value Report
+# Skills Greenskeeper - Skill Value Report
 # "Is each skill earning its context budget?"
 # Runs usage tracking to refresh the usage data, then renders the token-cost
 # table (which already cross-references with usage data). Replaces the v1.2

@@ -6,7 +6,7 @@ argument-hint: "<query-or-url> [--limit N] [--compare <skill>] [--json]"
 version: 1.6.0
 author: Krzysztof Hendzel <krzysztoff.hendzel@gmail.com>
 license: MIT
-compatibility: Designed for Claude Code. Requires bash 3.2+, curl, and network access to the GitHub API (anonymous works; GITHUB_TOKEN raises rate limits).
+compatibility: Works with Claude Code, Codex, OpenCode and Pi. Requires bash 3.2+, curl, and network access to the GitHub API (anonymous works; GITHUB_TOKEN raises rate limits).
 tags:
   - skills
   - discovery
@@ -38,7 +38,7 @@ Pre-install mode runs **two** checks, not one: overlap against what's already in
 
 ## Prerequisites
 
-- Claude Code with the skills-janitor plugin installed (provides `scripts/discover.sh`, `search.sh`, `precheck.sh`, `compare.sh`)
+- The skills-greenskeeper plugin installed (provides `scripts/discover.sh`, `search.sh`, `precheck.sh`, `compare.sh`) — or a standalone clone (run `./greenskeeper discover` instead)
 - bash 3.2+ and `curl`
 - Network access to `api.github.com` (anonymous OK; set `GITHUB_TOKEN` for higher rate limits and code search)
 
@@ -47,7 +47,7 @@ Pre-install mode runs **two** checks, not one: overlap against what's already in
 ### Step 1: Dispatch on argument shape
 
 ```bash
-bash ~/.claude/skills/skills-janitor/scripts/discover.sh <query-or-url> [options]
+bash ~/.claude/skills/skills-greenskeeper/scripts/discover.sh <query-or-url> [options]
 ```
 
 Examples:

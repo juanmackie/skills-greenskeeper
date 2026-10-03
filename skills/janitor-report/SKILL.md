@@ -6,7 +6,7 @@ argument-hint: "[--brief]"
 version: 1.7.0
 author: Krzysztof Hendzel <krzysztoff.hendzel@gmail.com>
 license: MIT
-compatibility: Designed for Claude Code. Requires bash 3.2+ (macOS default works). Reads local Claude Code data only (~/.claude/skills, ~/.claude/agents, installed plugin metadata).
+compatibility: Works with Claude Code, Codex, OpenCode and Pi. Requires bash 3.2+ (macOS default works). Reads local harness data only (skills, agents, installed plugin/package metadata).
 tags:
   - skills
   - health-check
@@ -21,7 +21,7 @@ Generate a comprehensive health report combining inventory, quality checks, dupl
 
 ## Overview
 
-One report covering every place a skill lives: user, project, codex, plugin, and source scopes. Plugin skills appear with their full invocation name (e.g. `marketing-skills:image`, `figma:figma-use`) — these were invisible to the v1.2 report. The scan JSON also includes an `agents` array (subagents from `~/.claude/agents` — their descriptions are always-loaded too) and per-plugin `update_available` (installed commit vs marketplace HEAD) — surface stale plugins and heavy agents in the report.
+One report covering every place a skill lives: Claude user/project/plugin/source, Codex, OpenCode user/project, and Pi user/project/package scopes. Plugin skills appear with their full invocation name (e.g. `marketing-skills:image`, `figma:figma-use`) — these were invisible to the v1.2 report. The scan JSON also includes an `agents` array (subagents from `~/.claude/agents` — their descriptions are always-loaded too) and per-plugin `update_available` (installed commit vs marketplace HEAD) — surface stale plugins and heavy agents in the report.
 
 Modes:
 
@@ -30,9 +30,9 @@ Modes:
 
 ## Prerequisites
 
-- Claude Code with the skills-janitor plugin installed (provides `scripts/scan.sh`, `lint.sh`, `detect_dupes.sh`)
+- The skills-greenskeeper plugin installed (provides `scripts/scan.sh`, `lint.sh`, `detect_dupes.sh`) — or a standalone clone (run `./greenskeeper report` instead)
 - bash 3.2+ (the stock macOS bash works; no external dependencies)
-- Read access to `~/.claude/skills`, `~/.claude/agents`, and installed plugin metadata
+- Read access to installed skills, agents, and plugin/package metadata (all harnesses)
 - No authentication or API keys required — the scripts read local files only
 
 ## Instructions
@@ -42,15 +42,15 @@ Modes:
 Full report:
 
 ```bash
-bash ~/.claude/skills/skills-janitor/scripts/scan.sh
-bash ~/.claude/skills/skills-janitor/scripts/lint.sh
-bash ~/.claude/skills/skills-janitor/scripts/detect_dupes.sh
+bash ~/.claude/skills/skills-greenskeeper/scripts/scan.sh
+bash ~/.claude/skills/skills-greenskeeper/scripts/lint.sh
+bash ~/.claude/skills/skills-greenskeeper/scripts/detect_dupes.sh
 ```
 
 Brief mode (inventory only):
 
 ```bash
-bash ~/.claude/skills/skills-janitor/scripts/scan.sh
+bash ~/.claude/skills/skills-greenskeeper/scripts/scan.sh
 ```
 
 ### Step 2: What each script covers

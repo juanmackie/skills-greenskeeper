@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Swipe Deck Builder
+# Skills Greenskeeper - Swipe Deck Builder
 # Joins scan + tokencost + usage data into a sorted deck of cards for the
 # swipe TUI. Each card has the verdict score, label, and everything the TUI
 # needs to render and act on a skill. Sort order is "most likely waste first"
@@ -35,6 +35,8 @@ bash "$SCRIPT_DIR/mcp.sh" --json > "$TMP_MCP" 2>/dev/null || echo '{}' > "$TMP_M
 python3 - "$TMP_TOKEN" "$TMP_SCAN" "$OUTPUT" "$TMP_MCP" <<'PYEOF'
 import json, sys, os
 from datetime import datetime, timezone
+# Pin LF on stdout (Windows pipe \r\n translation breaks bash consumers).
+sys.stdout.reconfigure(newline="\n")
 
 token_file, scan_file, out_file = sys.argv[1], sys.argv[2], sys.argv[3]
 mcp_file = sys.argv[4] if len(sys.argv) > 4 else ""
@@ -93,7 +95,7 @@ for s in tcost.get("skills", []):
     if days_since is not None and days_since > 60:
         score += 25
     score -= invocations * 5
-    if scope == "project":
+    if scope == "project" or scope.endswith("-project"):
         score -= 30  # project skills are usually intentional, downrank
 
     # Verdict label by bucket. Wording is careful not to claim the body is
@@ -101,7 +103,7 @@ for s in tcost.get("skills", []):
     # (an unused skill with a 22k body is a prime delete candidate), but the
     # "cost" language stays honest about what's always loaded.
     if score >= 70:
-        verdict_label = "Unused + heavy on trigger — prime delete candidate"
+        verdict_label = "Unused + heavy on trigger - prime delete candidate"
         verdict_tone = "warn"
     elif score >= 40:
         verdict_label = "Rarely used"
@@ -110,7 +112,7 @@ for s in tcost.get("skills", []):
         verdict_label = "Occasional use"
         verdict_tone = "neutral"
     else:
-        verdict_label = "Active — probably keep"
+        verdict_label = "Active - probably keep"
         verdict_tone = "good"
 
     cards.append({
@@ -148,24 +150,30 @@ for srv in mcp.get("servers", []):
     scope = srv.get("scope", "mcp-user").split(",")[0]
     calls = srv.get("calls", 0)
     lu = srv.get("last_used", "never")
+    kind = srv.get("kind", "claude")
+    enabled = srv.get("enabled", True)
     days_since = None
-    if lu and lu != "never":
+    if lu and lu != "never" and lu != "disabled":
         try:
             days_since = (datetime.now(timezone.utc) - datetime.strptime(lu, "%Y-%m-%d").replace(tzinfo=timezone.utc)).days
         except Exception:
             pass
-    score = 40.0            # connected server = always-loaded tool schemas
-    if calls == 0:
-        score += 45
-    if days_since is not None and days_since > 30:
-        score += 15
-    score -= calls * 2
-    if score >= 70:
-        label, tone = "Connected but unused — schemas load for nothing", "warn"
-    elif score >= 40:
-        label, tone = "Rarely called MCP server", "neutral"
+    if not enabled:
+        score = 0.0
+        label, tone = "Disabled in config - loads nothing", "neutral"
     else:
-        label, tone = "Actively used MCP server — keep", "good"
+        score = 40.0            # connected server = always-loaded tool schemas
+        if calls == 0:
+            score += 45
+        if days_since is not None and days_since > 30:
+            score += 15
+        score -= calls * 2
+        if score >= 70:
+            label, tone = "Connected but unused - schemas load for nothing", "warn"
+        elif score >= 40:
+            label, tone = "Rarely called MCP server", "neutral"
+        else:
+            label, tone = "Actively used MCP server - keep", "good"
     tools_used = srv.get("distinct_tools_used", 0)
     desc = f"MCP server ({srv.get('transport','stdio')}). {calls} calls, {tools_used} distinct tools used in the lookback window. Configured in: {srv.get('origin','?')}"
     cards.append({
@@ -174,6 +182,9 @@ for srv in mcp.get("servers", []):
         "scope": scope,
         "namespace": srv.get("origin") if scope == "mcp-plugin" else None,
         "path": srv.get("origin", ""),
+        "kind": kind,
+        "cfg": srv.get("cfg", ""),
+        "pointer": srv.get("pointer"),
         "tokens": 0,
         "desc_tokens": 0,
         "body_tokens": 0,

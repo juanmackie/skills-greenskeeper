@@ -6,7 +6,7 @@ argument-hint: "[--apply] [--prune]"
 version: 1.5.1
 author: Krzysztof Hendzel <krzysztoff.hendzel@gmail.com>
 license: MIT
-compatibility: Designed for Claude Code. Requires bash 3.2+ (macOS default works). Modifies only user/project/codex-scope skill files, never plugin content.
+compatibility: Works with Claude Code, Codex, OpenCode and Pi. Requires bash 3.2+ (macOS default works). Modifies only writable user/project skill files, never plugin, source or package-managed content.
 tags:
   - skills
   - auto-fix
@@ -21,21 +21,21 @@ Automatically fix common skill issues. Dry-run by default — shows what would c
 
 ## Overview
 
-Repairs frontmatter problems (missing delimiters, empty descriptions, missing version fields) across user, project, and codex-scope skills, and — in `--prune` mode — removes broken symlinks and empty skill directories. Plugin/marketplace skills are never modified (changes would be overwritten on update).
+Repairs frontmatter problems (missing delimiters, empty descriptions, missing version fields) across writable user/project skills in every harness, and — in `--prune` mode — removes broken symlinks and empty skill directories. Plugin, source and package-managed skills are never modified (changes would be overwritten on update).
 
 ## Prerequisites
 
-- Claude Code with the skills-janitor plugin installed (provides `scripts/fix.sh`)
+- The skills-greenskeeper plugin installed (provides `scripts/fix.sh`) — or a standalone clone (run `./greenskeeper fix` instead)
 - bash 3.2+ (the stock macOS bash works; no external dependencies)
-- Write access to the user's own skill directories (`~/.claude/skills`, `./.claude/skills`, `~/.agents/skills`)
+- Write access to the user's own skill directories (`~/.claude/skills`, `./.claude/skills`, `~/.agents/skills`, `~/.config/opencode/skills`, `~/.pi/agent/skills`)
 
 ## Instructions
 
 ### Step 1: Preview first (always)
 
 ```bash
-bash ~/.claude/skills/skills-janitor/scripts/fix.sh            # preview fixes
-bash ~/.claude/skills/skills-janitor/scripts/fix.sh --prune    # preview broken/orphaned removals
+bash ~/.claude/skills/skills-greenskeeper/scripts/fix.sh            # preview fixes
+bash ~/.claude/skills/skills-greenskeeper/scripts/fix.sh --prune    # preview broken/orphaned removals
 ```
 
 ### Step 2: Show the user the preview and confirm
@@ -45,8 +45,8 @@ Never jump straight to `--apply`. Present the `[DRY RUN]` lines and ask before w
 ### Step 3: Apply
 
 ```bash
-bash ~/.claude/skills/skills-janitor/scripts/fix.sh --apply           # apply fixes
-bash ~/.claude/skills/skills-janitor/scripts/fix.sh --prune --apply   # remove broken skills
+bash ~/.claude/skills/skills-greenskeeper/scripts/fix.sh --apply           # apply fixes
+bash ~/.claude/skills/skills-greenskeeper/scripts/fix.sh --prune --apply   # remove broken skills
 ```
 
 What it fixes:
