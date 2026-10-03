@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Skill Discovery
+# Skills Greenskeeper - Skill Discovery
 # Searches GitHub for Claude Code skills by keyword
 
 set -euo pipefail
@@ -17,8 +17,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # --- Load platform paths ---
 source "$(dirname "$0")/paths.sh"
-
-USER_SKILLS="$CLAUDE_USER_SKILLS"
 
 # --- Parse args ---
 while [[ $# -gt 0 ]]; do
@@ -62,8 +60,21 @@ fi
 # --- Ensure data dir ---
 mkdir -p "$DATA_DIR"
 
+# --- Collect installed skill names across all harnesses ---
+export INSTALLED_TMPFILE=$(mktemp)
+trap "rm -f $INSTALLED_TMPFILE" EXIT
+_installed_iter() {
+    local parent_dir="$1"
+    [[ -d "$parent_dir" ]] || return 0
+    for skill_dir in "$parent_dir"/*; do
+        [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
+        printf '%s\n' "$(basename "$skill_dir")" >> "$INSTALLED_TMPFILE"
+    done
+}
+for_each_skill_dir _installed_iter
+
 # --- Export for Python ---
-export KEYWORD LIMIT JSON_OUTPUT DATA_DIR USER_SKILLS
+export KEYWORD LIMIT JSON_OUTPUT DATA_DIR
 
 python3 << 'PYEOF'
 import json
@@ -74,11 +85,14 @@ import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
 
+# Pin LF on stdout (Windows pipe \r\n translation breaks bash consumers).
+sys.stdout.reconfigure(newline="\n")
+
 KEYWORD = os.environ.get("KEYWORD", "")
 LIMIT = int(os.environ.get("LIMIT", "10"))
 JSON_OUTPUT = os.environ.get("JSON_OUTPUT", "false") == "true"
 DATA_DIR = os.environ.get("DATA_DIR", "")
-USER_SKILLS = os.environ.get("USER_SKILLS", "")
+INSTALLED_TMPFILE = os.environ.get("INSTALLED_TMPFILE", "")
 
 # --- Check for auth ---
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
@@ -87,7 +101,7 @@ def github_api(url, token=""):
     """Make a GitHub API request with rate limit awareness."""
     headers = {
         "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "skills-janitor/1.5.0"
+        "User-Agent": "skills-greenskeeper/1.9.0"
     }
     if token:
         headers["Authorization"] = f"token {token}"
@@ -226,19 +240,14 @@ if results is None:
         with open(cache_file, "w") as f:
             json.dump(cache, f, indent=2)
 
-# --- Cross-reference with installed skills ---
+# --- Cross-reference with installed skills (all harnesses) ---
 installed_skills = set()
-# Check Claude Code skills
-if USER_SKILLS and os.path.isdir(USER_SKILLS):
-    for name in os.listdir(USER_SKILLS):
-        if os.path.isdir(os.path.join(USER_SKILLS, name)):
-            installed_skills.add(name.lower())
-# Check Codex skills
-codex_skills = os.path.expanduser("~/.agents/skills")
-if os.path.isdir(codex_skills):
-    for name in os.listdir(codex_skills):
-        if os.path.isdir(os.path.join(codex_skills, name)):
-            installed_skills.add(name.lower())
+if INSTALLED_TMPFILE and os.path.isfile(INSTALLED_TMPFILE):
+    with open(INSTALLED_TMPFILE) as f:
+        for line in f:
+            name = line.strip()
+            if name:
+                installed_skills.add(name.lower())
 
 # Also check installed plugins
 plugins_file = os.path.expanduser("~/.claude/plugins/installed_plugins.json")
@@ -281,7 +290,7 @@ else:
     cache_note = " (cached)" if from_cache else ""
     auth_note = "" if GITHUB_TOKEN else " (unauthenticated - set GITHUB_TOKEN for better results)"
 
-    print(f"=== Skills Janitor - Skill Discovery ===")
+    print(f"=== Skills Greenskeeper - Skill Discovery ===")
     print(f'Search: "{KEYWORD}"{cache_note}{auth_note}')
     print()
 

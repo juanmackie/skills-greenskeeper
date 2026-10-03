@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Usage Tracking
+# Skills Greenskeeper - Usage Tracking
 # Parses conversation history to track skill invocation frequency
 
 set -euo pipefail
@@ -71,7 +71,7 @@ collect_skills() {
         name=$(basename "$skill_dir")
 
         # Skip self
-        [[ "$name" == "skills-janitor" ]] && continue
+        [[ "$name" == "skills-greenskeeper" ]] && continue
 
         local skill_file=""
         [[ -f "$skill_dir/SKILL.md" ]] && skill_file="$skill_dir/SKILL.md"
@@ -98,8 +98,12 @@ collect_skills() {
     done
 }
 
-# Scan all platforms (Claude Code + Codex + plugins + sources)
-_usage_scan() { collect_skills "$1" "$2" "$4"; }
+# Scan all harnesses (Claude Code + Codex + OpenCode + Pi + plugins + sources)
+_usage_scan() {
+    local _scope="$2"
+    [[ "$3" != "claude" ]] && _scope="$3-$2"
+    collect_skills "$1" "$_scope" "$4"
+}
 for_each_skill_dir _usage_scan
 
 # --- Transcript-based Skill invocations (v1.7) ---
@@ -107,7 +111,21 @@ for_each_skill_dir _usage_scan
 # auto-triggered, which the slash-command history can't see. Pre-filter with
 # grep (transcript trees run to GBs) over files inside the lookback window.
 export SKILL_CALLS_TMP=$(mktemp)
-trap "rm -f $SKILLS_TMPFILE $SKILL_CALLS_TMP" EXIT
+export OPENCODE_CALLS_TMP=$(mktemp)
+export PI_CALLS_TMP=$(mktemp)
+export OPENCODE_SHARE="${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}"
+export PI_SESSIONS_ROOT="${PI_CODING_AGENT_SESSION_DIR:-$PI_AGENT_DIR/sessions}"
+trap "rm -f $SKILLS_TMPFILE $SKILL_CALLS_TMP $OPENCODE_CALLS_TMP $PI_CALLS_TMP" EXIT
+# Soft warnings (inventories still run, counts stay 0): only warn when the
+# harness actually has skills registered, so Claude-only installs stay quiet.
+if [[ "$HAS_OPENCODE" == "true" && ! -f "$OPENCODE_SHARE/opencode.db" && ! -d "$OPENCODE_SHARE/project" ]]; then
+    echo "WARNING: OpenCode skills present but no session store found under $OPENCODE_SHARE" >&2
+    echo "OpenCode usage counts will show as 0." >&2
+fi
+if [[ "$HAS_PI" == "true" && ! -d "$PI_SESSIONS_ROOT" ]]; then
+    echo "WARNING: Pi skills present but no sessions found under $PI_SESSIONS_ROOT" >&2
+    echo "Pi usage counts will show as 0." >&2
+fi
 _DAYS=$(( WEEKS * 7 ))
 _seen_tr_roots=""
 for _proj_root in "${CLAUDE_CONFIG_DIR:-/nonexistent}/projects" "$HOME/.claude/projects" "$HOME"/.claude-account-*/projects; do
@@ -121,6 +139,165 @@ for _proj_root in "${CLAUDE_CONFIG_DIR:-/nonexistent}/projects" "$HOME/.claude/p
         done >> "$SKILL_CALLS_TMP"
 done
 
+# --- OpenCode + Pi skill invocations ---
+# OpenCode: sessions live in a SQLite store (opencode.db; SELECT-only access,
+# windowed by session time so multi-GB stores stay fast), with a best-effort
+# regex pass over legacy JSON storage. Pi: session JSONL trees, where a skill
+# load is a `read` tool call on .../skills/<name>/SKILL.md and a forced load
+# is a `/skill:<name>` user message. Both stages emit name<TAB>YYYY-MM-DD.
+python3 << 'PYEOF'
+import json
+import os
+import re
+import sqlite3
+import sys
+from datetime import datetime, timedelta, timezone
+# Pin LF on stdout (Windows pipe \r\n translation breaks bash consumers).
+sys.stdout.reconfigure(newline="\n")
+
+WEEKS = int(os.environ.get("WEEKS", "4"))
+now = datetime.now(timezone.utc)
+cutoff = now - timedelta(weeks=WEEKS)
+cutoff_day = cutoff.strftime("%Y-%m-%d")
+
+# --- OpenCode: SQLite session store (read-only queries, no writes) ---
+oc_out = os.environ.get("OPENCODE_CALLS_TMP", "")
+oc_lines = []
+oc_db = os.path.join(os.environ.get("OPENCODE_SHARE", ""), "opencode.db")
+if oc_db and os.path.isfile(oc_db):
+    try:
+        con = sqlite3.connect(oc_db)
+        cur = con.cursor()
+        cutoff_ms = int(cutoff.timestamp() * 1000)
+        cur.execute("SELECT id FROM session WHERE time_updated >= ?",
+                    (cutoff_ms,))
+        ids = [r[0] for r in cur.fetchall()]
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            q = ("SELECT data, time_updated FROM part "
+                 "WHERE session_id IN (%s) AND "
+                 "(data LIKE '%%\"tool\":\"skill\"%%' OR "
+                 "data LIKE '%%\"tool\": \"skill\"%%')" % ",".join("?" * len(chunk)))
+            for data, tms in cur.execute(q, chunk):
+                try:
+                    d = json.loads(data)
+                except Exception:
+                    continue
+                if not isinstance(d, dict) or d.get("tool") != "skill":
+                    continue
+                try:
+                    name = ((d.get("state") or {}).get("input") or {}).get("name")
+                except Exception:
+                    name = None
+                if not name:
+                    continue
+                try:
+                    dt = datetime.fromtimestamp(int(tms) / 1000, tz=timezone.utc)
+                except Exception:
+                    continue
+                if dt < cutoff:
+                    continue
+                oc_lines.append("%s\t%s" % (name, dt.strftime("%Y-%m-%d")))
+        con.close()
+    except Exception as e:
+        print("WARNING: OpenCode usage skipped (%s)" % e, file=sys.stderr)
+# Legacy JSON storage (pre-SQLite installs): schema-agnostic heuristic —
+# count "name" values on lines that record a skill tool call, dated by file
+# mtime. Only the documented project/*/storage layout is read.
+oc_proj = os.path.join(os.environ.get("OPENCODE_SHARE", ""), "project")
+if os.path.isdir(oc_proj):
+    rx_tool = re.compile(r'"tool"\s*:\s*"skill"')
+    rx_name = re.compile(r'"name"\s*:\s*"([A-Za-z0-9][A-Za-z0-9_-]*)"')
+    for root, _dirs, files in os.walk(oc_proj):
+        for fn in files:
+            if not fn.endswith(".json"):
+                continue
+            fp = os.path.join(root, fn)
+            try:
+                mt = datetime.fromtimestamp(os.path.getmtime(fp), tz=timezone.utc)
+            except OSError:
+                continue
+            if mt < cutoff:
+                continue
+            try:
+                with open(fp, encoding="utf-8", errors="replace") as f:
+                    txt = f.read(4_000_000)
+            except OSError:
+                continue
+            if '"skill"' not in txt:
+                continue
+            day = mt.strftime("%Y-%m-%d")
+            for line in txt.splitlines():
+                if rx_tool.search(line):
+                    for m in rx_name.finditer(line):
+                        oc_lines.append("%s\t%s" % (m.group(1), day))
+if oc_out:
+    with open(oc_out, "w", newline="\n") as f:
+        f.write("\n".join(oc_lines) + ("\n" if oc_lines else ""))
+
+# --- Pi: session JSONL trees ---
+pi_out = os.environ.get("PI_CALLS_TMP", "")
+pi_lines = []
+pi_root = os.environ.get("PI_SESSIONS_ROOT", "")
+SKILL_RX = re.compile(r"[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md\s*$", re.I)
+FORCE_RX = re.compile(r"/skill:([A-Za-z0-9][A-Za-z0-9_-]*)")
+if pi_root and os.path.isdir(pi_root):
+    try:
+        for root, _dirs, files in os.walk(pi_root):
+            for fn in files:
+                if not fn.endswith(".jsonl"):
+                    continue
+                fp = os.path.join(root, fn)
+                try:
+                    if datetime.fromtimestamp(os.path.getmtime(fp), tz=timezone.utc) < cutoff:
+                        continue
+                except OSError:
+                    continue
+                try:
+                    f = open(fp, encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                with f:
+                    for line in f:
+                        if "SKILL.md" not in line and "/skill:" not in line:
+                            continue
+                        try:
+                            e = json.loads(line)
+                        except Exception:
+                            continue
+                        if e.get("type") != "message":
+                            continue
+                        ts = (e.get("timestamp") or "")[:10]
+                        if not ts or ts < cutoff_day:
+                            continue
+                        m = e.get("message") or {}
+                        content = m.get("content")
+                        if not isinstance(content, list):
+                            continue
+                        if m.get("role") == "assistant":
+                            for item in content:
+                                if not isinstance(item, dict):
+                                    continue
+                                if item.get("type") != "toolCall" or item.get("name") != "read":
+                                    continue
+                                args = item.get("arguments") or {}
+                                p = args.get("path") or args.get("filePath") or ""
+                                sm = SKILL_RX.search(p)
+                                if sm:
+                                    pi_lines.append("%s\t%s" % (sm.group(1), ts))
+                        elif m.get("role") == "user":
+                            for item in content:
+                                if not isinstance(item, dict):
+                                    continue
+                                for fm in FORCE_RX.finditer(item.get("text") or ""):
+                                    pi_lines.append("%s\t%s" % (fm.group(1), ts))
+    except Exception as e:
+        print("WARNING: Pi usage skipped (%s)" % e, file=sys.stderr)
+if pi_out:
+    with open(pi_out, "w", newline="\n") as f:
+        f.write("\n".join(pi_lines) + ("\n" if pi_lines else ""))
+PYEOF
+
 # --- Run analysis ---
 python3 << 'PYEOF'
 import json
@@ -129,6 +306,8 @@ import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+# Pin LF on stdout (Windows pipe \r\n translation breaks bash consumers).
+sys.stdout.reconfigure(newline="\n")
 
 WEEKS = int(os.environ.get("WEEKS", "4"))
 JSON_OUTPUT = os.environ.get("JSON_OUTPUT", "false") == "true"
@@ -255,9 +434,11 @@ for line in history_lines:
             # Match against known skills. Plugin skills are registered under
             # their qualified name (<plugin>:<skill>) but Claude Code accepts
             # the bare form too (`/janitor-audit` for
-            # `skills-janitor:janitor-audit`) — match both, exact-name first
+            # `skills-greenskeeper:janitor-audit`) — match both, exact-name first
             # across all skills so a user-scope skill wins over a bare plugin
-            # alias with the same name.
+            # alias with the same name. rsplit: Pi package names are
+            # themselves colon-qualified ("npm:pkg:skill"), so only the last
+            # segment is the invocable name.
             cmd_name = cmd.lstrip("/").lstrip("$.")
             matched = None
             for s in skills:
@@ -266,7 +447,7 @@ for line in history_lines:
                     break
             if matched is None and ":" not in cmd_name:
                 for s in skills:
-                    if ":" in s["name"] and cmd_name == s["name"].split(":", 1)[1]:
+                    if ":" in s["name"] and cmd_name == s["name"].rsplit(":", 1)[-1]:
                         matched = s
                         break
             if matched is not None:
@@ -326,7 +507,7 @@ if SKILL_CALLS and os.path.isfile(SKILL_CALLS):
                         break
                 if matched is None and ":" not in inv:
                     for s in skills:
-                        if ":" in s["name"] and inv == s["name"].split(":", 1)[1]:
+                        if ":" in s["name"] and inv == s["name"].rsplit(":", 1)[-1]:
                             matched = s
                             break
                 if matched is not None:
@@ -335,6 +516,47 @@ if SKILL_CALLS and os.path.isfile(SKILL_CALLS):
                     if name not in last_used or t > last_used[name]:
                         last_used[name] = t
                     weekly_totals[wk] += 1
+
+# --- OpenCode + Pi invocations (name<TAB>date files from the bash wrapper) ---
+# Highest-fidelity sources like the Claude transcript records above: every
+# entry is a real skill load, so they count into explicit_counts under the
+# matching registry name (qualified or bare folder name).
+for _harness_env in ("OPENCODE_CALLS_TMP", "PI_CALLS_TMP"):
+    _hf = os.environ.get(_harness_env, "")
+    if not _hf or not os.path.isfile(_hf):
+        continue
+    with open(_hf, encoding="utf-8", errors="replace") as _f:
+        for _line in _f:
+            _parts = _line.strip().split("\t")
+            if len(_parts) != 2:
+                continue
+            _inv, _day = _parts
+            if not _inv:
+                continue
+            try:
+                _t = datetime.strptime(_day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            if _t < cutoff:
+                continue
+            _wk = _t.strftime("%Y-W%W")
+            _matched = None
+            for _s in skills:
+                if _inv == _s["name"]:
+                    _matched = _s
+                    break
+            if _matched is None and ":" not in _inv:
+                for _s in skills:
+                    if ":" in _s["name"] and _inv == _s["name"].rsplit(":", 1)[-1]:
+                        _matched = _s
+                        break
+            if _matched is not None:
+                _name = _matched["name"]
+                explicit_counts[_name][_wk] += 1
+                last_used[_name] = max(
+                    last_used.get(_name, _t), _t
+                )
+                weekly_totals[_wk] += 1
 
 # --- Build results ---
 all_skill_names = [s["name"] for s in skills]
@@ -421,7 +643,7 @@ else:
     period_start = cutoff.strftime("%Y-%m-%d")
     period_end = now.strftime("%Y-%m-%d")
 
-    print(f"=== Skills Janitor - Usage Report ===")
+    print(f"=== Skills Greenskeeper - Usage Report ===")
     print(f"Period: {period_start} to {period_end} ({WEEKS} weeks)")
     print(f"Total skills tracked: {len(results)}")
     print()

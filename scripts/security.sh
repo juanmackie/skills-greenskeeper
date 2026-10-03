@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Security Scan
+# Skills Greenskeeper - Security Scan
 # Heuristic scan of skill content for prompt-injection and malicious patterns.
 #
 # Motivation: public research (Snyk "ToxicSkills", 2026) found prompt
@@ -56,17 +56,35 @@ else
     source "$SCRIPT_DIR/paths.sh"
     _sec_iter() {
         local parent_dir="$1" scope="$2" _platform="$3" namespace="${4:-}"
-        [[ "$_platform" == "codex" ]] && scope="codex-${scope}"
+        [[ "$_platform" != "claude" ]] && scope="${_platform}-${scope}"
         local qualified
         for skill_dir in "$parent_dir"/*; do
             [[ -d "$skill_dir" ]] || continue
             qualified="$(basename "$skill_dir")"
-            [[ "$qualified" == "skills-janitor" ]] && continue
+            [[ "$qualified" == "skills-greenskeeper" ]] && continue
             [[ -n "$namespace" ]] && qualified="${namespace}:${qualified}"
             printf '%s\t%s\t%s\n' "$scope" "$qualified" "$skill_dir" >> "$TARGETS_TSV"
         done
     }
     for_each_skill_dir _sec_iter
+    # Pi extensions: executable TypeScript running with user permissions.
+    # Index dirs scan as bundles; single-file extensions scan as files
+    # (the python stage handles both).
+    for _ext_root in "$PI_AGENT_DIR/extensions" "./.pi/extensions"; do
+        [[ -d "$_ext_root" ]] || continue
+        for _ext in "$_ext_root"/*.ts "$_ext_root"/*.js; do
+            [[ -f "$_ext" ]] || continue
+            _ename=$(basename "$_ext")
+            _ename="${_ename%.*}"
+            printf '%s\t%s\t%s\n' "pi-extension" "$_ename" "$_ext" >> "$TARGETS_TSV"
+        done
+        for _ext in "$_ext_root"/*/; do
+            [[ -d "$_ext" ]] || continue
+            if [[ -f "${_ext}index.ts" || -f "${_ext}index.js" ]]; then
+                printf '%s\t%s\t%s\n' "pi-extension" "$(basename "$_ext")" "${_ext%/}" >> "$TARGETS_TSV"
+            fi
+        done
+    done
 fi
 
 export TARGETS_TSV JSON_OUTPUT
@@ -80,6 +98,8 @@ import sys
 
 JSON_OUTPUT = os.environ.get("JSON_OUTPUT", "false") == "true"
 TARGETS = os.environ.get("TARGETS_TSV", "")
+# Pin LF on stdout (Windows pipe \r\n translation breaks bash consumers).
+sys.stdout.reconfigure(newline="\n")
 
 MD_EXT = {".md", ".markdown", ".txt"}
 SCRIPT_EXT = {".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".ts", ".rb", ".pl"}
@@ -218,7 +238,15 @@ with open(TARGETS) as f:
         if len(parts) != 3:
             continue
         scope, name, path = parts
-        findings = scan_skill(path)
+        if os.path.isfile(path):
+            # Single-file target (e.g. a one-file Pi extension): scan it
+            # alone instead of walking a directory.
+            findings = []
+            fn = os.path.basename(path)
+            ext = os.path.splitext(fn)[1].lower()
+            scan_file(path, fn, ext in MD_EXT, findings)
+        else:
+            findings = scan_skill(path)
         sevs = {f["severity"] for f in findings}
         verdict = "RISK" if "HIGH" in sevs else ("REVIEW" if "MEDIUM" in sevs else "PASS")
         skills.append({
@@ -240,7 +268,7 @@ if JSON_OUTPUT:
     }, indent=2))
     sys.exit(0)
 
-print("=== Skills Janitor - Security Scan ===")
+print("=== Skills Greenskeeper - Security Scan ===")
 print("Heuristic scan for prompt-injection and malicious patterns.")
 print("Findings mean 'read this before trusting it', not proof of malice.")
 print()

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Auto-Fix Common Issues
+# Skills Greenskeeper - Auto-Fix Common Issues
 # Fixes frontmatter problems, missing fields, and naming mismatches
 # Safe by default: --dry-run mode unless --apply is passed
 
@@ -10,10 +10,8 @@ command -v python3 &>/dev/null || { echo "ERROR: python3 required" >&2; exit 1; 
 # --- Load platform paths ---
 source "$(dirname "$0")/paths.sh"
 
-USER_SKILLS="$CLAUDE_USER_SKILLS"
-PROJECT_SKILLS="$CLAUDE_PROJECT_SKILLS"
 # Same data dir as usage/tokencost/search (previously this wrote into
-# ~/.claude/skills/skills-janitor/data, creating a fake skill directory).
+# ~/.claude/skills/skills-greenskeeper/data, creating a fake skill directory).
 DATA_DIR="$(cd "$(dirname "$0")/.." && pwd)/data"
 CHANGELOG="$DATA_DIR/changelog.log"
 
@@ -26,6 +24,14 @@ for arg in "$@"; do
         --apply) DRY_RUN=false; APPLY=true ;;
         --dry-run) DRY_RUN=true ;;
         --prune) PRUNE=true ;;
+        -h|--help)
+            echo "Usage: fix.sh [--dry-run] [--apply] [--prune]"
+            echo ""
+            echo "Preview (default) or apply frontmatter fixes across writable"
+            echo "skills; --prune also removes broken symlinks and empty dirs."
+            echo "Plugin, source and package-managed skills are never modified."
+            exit 0
+            ;;
     esac
 done
 
@@ -53,7 +59,7 @@ fix_skill() {
     name=$(basename "$path")
 
     # Skip self
-    [[ "$name" == "skills-janitor" ]] && return
+    [[ "$name" == "skills-greenskeeper" ]] && return
 
     # Skip broken symlinks
     if [[ -L "$path" && ! -e "$path" ]]; then
@@ -86,6 +92,16 @@ fix_skill() {
     # Skip plugin/marketplace skills
     if [[ "$path" == *"/plugins/"* || "$path" == *"/sources/"* ]]; then
         echo "  [SKIP]    $name: Plugin/marketplace skill - don't modify"
+        ((SKIPPED++)) || true
+        return
+    fi
+
+    # Skip package-managed skills (Pi npm/git packages): the package manager
+    # owns these files, edits would be overwritten on update. The scope check
+    # in the scan loop below is the primary guard; this path check is defense
+    # in depth for symlinked or nested layouts.
+    if [[ "$path" == *"/node_modules/"* || "$path" == *"/agent/git/"* ]]; then
+        echo "  [SKIP]    $name: Package-managed skill - edit at the package source"
         ((SKIPPED++)) || true
         return
     fi
@@ -256,7 +272,7 @@ $new_content"
     fi
 }
 
-echo "=== Skills Janitor - Auto-Fix ==="
+echo "=== Skills Greenskeeper - Auto-Fix ==="
 if [[ "$DRY_RUN" == "true" ]]; then
     echo "Mode: DRY RUN (use --apply to make changes)"
 else
@@ -264,47 +280,42 @@ else
 fi
 echo ""
 
-echo "--- User Skills ($USER_SKILLS) ---"
-if [[ -d "$USER_SKILLS" ]]; then
-    for skill_dir in "$USER_SKILLS"/*; do
-        [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
-        fix_skill "${skill_dir%/}" "user"
-    done
-fi
-
-# Only scan project skills if they're different from user skills
-USER_REAL=$(cd "$USER_SKILLS" 2>/dev/null && pwd -P || echo "")
-PROJECT_REAL=$(cd "$PROJECT_SKILLS" 2>/dev/null && pwd -P || echo "")
-if [[ -d "$PROJECT_SKILLS" && "$USER_REAL" != "$PROJECT_REAL" ]]; then
-    echo ""
-    echo "--- Project Skills ($PROJECT_SKILLS) ---"
-    for skill_dir in "$PROJECT_SKILLS"/*; do
-        [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
-        fix_skill "${skill_dir%/}" "project"
-    done
-fi
-
-# Scan Codex skills
-if [[ -d "$CODEX_USER_SKILLS" ]]; then
-    echo ""
-    echo "--- Codex User Skills ($CODEX_USER_SKILLS) ---"
-    for skill_dir in "$CODEX_USER_SKILLS"/*; do
-        [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
-        fix_skill "${skill_dir%/}" "codex-user"
-    done
-fi
-if [[ -d "$CODEX_PROJECT_SKILLS" ]]; then
-    CODEX_P_REAL=$(cd "$CODEX_PROJECT_SKILLS" 2>/dev/null && pwd -P || echo "")
-    CODEX_U_REAL=$(cd "$CODEX_USER_SKILLS" 2>/dev/null && pwd -P || echo "")
-    if [[ "$CODEX_P_REAL" != "$CODEX_U_REAL" ]]; then
+echo "--- Fix: user/project skills across all harnesses ---"
+_fix_seen=""
+_fix_first=true
+_fix_iter() {
+    local parent_dir="$1" scope="$2" _platform="$3"
+    # Never fix plugin, source, or package-managed skills.
+    [[ "$scope" == "plugin" || "$scope" == "plugin-source" || "$scope" == "package" ]] && return 0
+    local label="$scope" plat_disp=""
+    [[ "$_platform" != "claude" ]] && label="${_platform}-${scope}"
+    case "$_platform" in
+        codex) plat_disp="Codex " ;;
+        opencode) plat_disp="OpenCode " ;;
+        pi) plat_disp="Pi " ;;
+    esac
+    local scope_disp="$scope"
+    case "$scope" in
+        user) scope_disp="User" ;;
+        project) scope_disp="Project" ;;
+    esac
+    local header="${plat_disp}${scope_disp}"
+    local real_dir
+    real_dir=$(cd "$parent_dir" 2>/dev/null && pwd -P || echo "$parent_dir")
+    case "|$_fix_seen|" in *"|$real_dir|"*) return 0 ;; esac
+    _fix_seen="$_fix_seen|$real_dir"
+    if [[ "$_fix_first" == "true" ]]; then
+        _fix_first=false
+    else
         echo ""
-        echo "--- Codex Project Skills ($CODEX_PROJECT_SKILLS) ---"
-        for skill_dir in "$CODEX_PROJECT_SKILLS"/*; do
-            [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
-            fix_skill "${skill_dir%/}" "codex-project"
-        done
     fi
-fi
+    echo "--- $header Skills ($parent_dir) ---"
+    for skill_dir in "$parent_dir"/*; do
+        [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
+        fix_skill "${skill_dir%/}" "$label"
+    done
+}
+for_each_skill_dir _fix_iter
 
 # --- Prune mode ---
 PRUNED=0
@@ -324,7 +335,7 @@ if [[ "$PRUNE" == "true" ]]; then
             [[ -d "$skill_dir" || -L "$skill_dir" ]] || continue
             local name
             name=$(basename "$skill_dir")
-            [[ "$name" == "skills-janitor" ]] && continue
+            [[ "$name" == "skills-greenskeeper" ]] && continue
 
             local path="${skill_dir%/}"
 
@@ -369,16 +380,20 @@ if [[ "$PRUNE" == "true" ]]; then
         done
     }
 
-    prune_dir "$USER_SKILLS" "user"
-    if [[ -d "$PROJECT_SKILLS" && "$USER_REAL" != "$PROJECT_REAL" ]]; then
-        prune_dir "$PROJECT_SKILLS" "project"
-    fi
-    [[ -d "$CODEX_USER_SKILLS" ]] && prune_dir "$CODEX_USER_SKILLS" "codex-user"
-    if [[ -d "$CODEX_PROJECT_SKILLS" ]]; then
-        CODEX_P_REAL=$(cd "$CODEX_PROJECT_SKILLS" 2>/dev/null && pwd -P || echo "")
-        CODEX_U_REAL=$(cd "$CODEX_USER_SKILLS" 2>/dev/null && pwd -P || echo "")
-        [[ "$CODEX_P_REAL" != "$CODEX_U_REAL" ]] && prune_dir "$CODEX_PROJECT_SKILLS" "codex-project"
-    fi
+    _prune_seen=""
+    _prune_iter() {
+        local parent_dir="$1" scope="$2" _platform="$3"
+        # Never prune plugin, source, or package-managed skills.
+        [[ "$scope" == "plugin" || "$scope" == "plugin-source" || "$scope" == "package" ]] && return 0
+        local label="$scope"
+        [[ "$_platform" != "claude" ]] && label="${_platform}-${scope}"
+        local real_dir
+        real_dir=$(cd "$parent_dir" 2>/dev/null && pwd -P || echo "$parent_dir")
+        case "|$_prune_seen|" in *"|$real_dir|"*) return 0 ;; esac
+        _prune_seen="$_prune_seen|$real_dir"
+        prune_dir "$parent_dir" "$label"
+    }
+    for_each_skill_dir _prune_iter
 
     if [[ "$PRUNED" -eq 0 ]]; then
         echo "  No broken or orphaned skills found."

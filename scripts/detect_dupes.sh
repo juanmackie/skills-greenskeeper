@@ -1,10 +1,18 @@
 #!/bin/bash
-# Skills Janitor - Duplicate Detection
+# Skills Greenskeeper - Duplicate Detection
 # Finds skills with overlapping descriptions and trigger keywords
 
 set -euo pipefail
 
 command -v python3 &>/dev/null || { echo "ERROR: python3 required" >&2; exit 1; }
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    echo "Usage: detect_dupes.sh"
+    echo ""
+    echo "Name collisions and description overlap (Jaccard > 30%) across all"
+    echo "installed skills, every harness and scope."
+    exit 0
+fi
 
 # --- Load platform paths ---
 source "$(dirname "$0")/paths.sh"
@@ -25,7 +33,7 @@ extract_skills() {
         name=$(basename "$skill_dir")
 
         # Skip self
-        [[ "$name" == "skills-janitor" ]] && continue
+        [[ "$name" == "skills-greenskeeper" ]] && continue
 
         local skill_file=""
         [[ -f "$skill_dir/SKILL.md" ]] && skill_file="$skill_dir/SKILL.md"
@@ -55,11 +63,15 @@ extract_skills() {
     done
 }
 
-# Scan all platforms (Claude Code + Codex + plugins + sources)
-_dupes_scan() { extract_skills "$1" "$2" "$4"; }
+# Scan all harnesses (Claude Code + Codex + OpenCode + Pi + plugins + sources)
+_dupes_scan() {
+    local _scope="$2"
+    [[ "$3" != "claude" ]] && _scope="$3-$2"
+    extract_skills "$1" "$_scope" "$4"
+}
 for_each_skill_dir _dupes_scan
 
-echo "=== Skills Janitor - Duplicate Detection ==="
+echo "=== Skills Greenskeeper - Duplicate Detection ==="
 echo ""
 total_rows=$(wc -l < "$TMPFILE" | tr -d ' ')
 unique_paths=$(awk -F'\t' '{print $3}' "$TMPFILE" | sort -u | wc -l | tr -d ' ')
@@ -72,6 +84,8 @@ import re
 import sys
 import os
 from collections import defaultdict
+# Pin LF on stdout (Windows pipe \r\n translation breaks bash consumers).
+sys.stdout.reconfigure(newline="\n")
 
 raw_skills = []
 

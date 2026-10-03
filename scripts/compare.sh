@@ -1,5 +1,5 @@
 #!/bin/bash
-# Skills Janitor - Market Comparison
+# Skills Greenskeeper - Market Comparison
 # Compares a local skill against alternatives found online
 
 set -euo pipefail
@@ -44,14 +44,15 @@ if [[ -z "$SKILL_NAME" ]]; then
     exit 1
 fi
 
-# --- Find the skill locally ---
+# --- Find the skill locally (all harnesses, plugin/package dirs included) ---
 SKILL_PATH=""
-for dir in "$CLAUDE_USER_SKILLS/$SKILL_NAME" "$CLAUDE_PROJECT_SKILLS/$SKILL_NAME" "$CODEX_USER_SKILLS/$SKILL_NAME" "$CODEX_PROJECT_SKILLS/$SKILL_NAME"; do
-    if [[ -d "$dir" ]]; then
-        SKILL_PATH="$dir"
-        break
+_find_skill_iter() {
+    [[ -n "$SKILL_PATH" ]] && return 0
+    if [[ -d "$1/$SKILL_NAME" ]]; then
+        SKILL_PATH="$1/$SKILL_NAME"
     fi
-done
+}
+for_each_skill_dir _find_skill_iter
 
 if [[ -z "$SKILL_PATH" ]]; then
     echo "ERROR: Skill '$SKILL_NAME' not found in any skill directory" >&2
@@ -122,7 +123,7 @@ my_keywords.update(w.lower() for w in name_words if len(w) > 2)
 def github_api(url):
     headers = {
         "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "skills-janitor/1.2.0"
+        "User-Agent": "skills-greenskeeper/1.9.0"
     }
     if GITHUB_TOKEN:
         headers["Authorization"] = f"token {GITHUB_TOKEN}"
@@ -232,7 +233,7 @@ if JSON_OUTPUT:
     }
     print(json.dumps(output, indent=2))
 else:
-    print(f"=== Skills Janitor - Market Analysis ===")
+    print(f"=== Skills Greenskeeper - Market Analysis ===")
     print(f"Analyzing: {SKILL_NAME}")
     print()
     print(f"Your skill keywords: {', '.join(sorted(my_keywords)[:12])}")

@@ -16,7 +16,7 @@
 set -u
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
-TMP=$(mktemp -d -t janitor-seam2.XXXXXX)
+TMP=$(mktemp -d -t greenskeeper-seam2.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 
 PASS=0

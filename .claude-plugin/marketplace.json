@@ -1,17 +1,17 @@
 {
-  "name": "skills-janitor",
+  "name": "skills-greenskeeper",
   "owner": {
-    "name": "Krzysztof Hendzel",
-    "url": "https://github.com/khendzel"
+    "name": "juanmackie",
+    "url": "https://github.com/juanmackie"
   },
   "metadata": {
-    "description": "Tinder for your Claude Code skills, subagents and MCP servers. Swipe away what wastes context, scan for prompt injection, get honest token costs. Fixes what it finds and actually deletes. Zero dependencies, Claude Code + Codex.",
-    "version": "1.8.0",
-    "repository": "https://github.com/khendzel/skills-janitor"
+    "description": "Tinder for your skills in every harness — Claude Code, Codex, OpenCode and Pi. Swipe away what wastes context, scan for prompt injection, get honest token costs. Fixes what it finds and actually deletes. Zero dependencies.",
+    "version": "1.9.0",
+    "repository": "https://github.com/juanmackie/skills-greenskeeper"
   },
   "plugins": [
     {
-      "name": "skills-janitor",
+      "name": "skills-greenskeeper",
       "description": "6 skill hygiene tools: health report, auto-fix + prune, value (honest token split + usage), security scan (prompt injection + malicious patterns), discover (search + precheck), swipe (interactive triage).",
       "source": "./",
       "strict": false,

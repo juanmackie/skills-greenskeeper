@@ -1,4 +1,4 @@
-"""Skills Janitor - TSV interchange reader.
+"""Skills Greenskeeper - TSV interchange reader.
 
 The scan module's bash side collects one tab-separated row per skill/agent/
 command; a single python3 pass renders the JSON inventory. This reader is the
